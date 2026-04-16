@@ -31,11 +31,22 @@ ignore =
 # mistral_converter.py: E402 - sys.path setup before local imports
 per-file-ignores =
     __init__.py:F401
+    # main.py no longer needs C901 after extracting modes/*; keep E402 only.
+    main.py:E402
+    # config.py has a single validate_configuration function (C901); scope
+    # the ignore to the file rather than refactoring the whole config.
     config.py:E402,C901
-    main.py:E402,C901
+    # mistral_converter.py remains a large, cohesive module; C901 stays
+    # scoped here until the module is split by concern.
     mistral_converter.py:E402,C901
+    # mode_document_qna has one deliberately-long orchestration function
+    # that would harm readability if broken up further.
+    modes/qna.py:C901
     tests/test_local_converter.py:E402
     tests/test_mistral_converter.py:E402
+    tests/test_mistral_batch.py:E402,F401,W391
+    tests/test_mistral_qna.py:E402,F401,W391
+    tests/test_mistral_url_validation.py:E402,F401,W391
     tests/test_pipeline.py:E402
 
 # Maximum cyclomatic complexity

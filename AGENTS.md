@@ -6,11 +6,11 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 
 - Install: `pip install -r requirements.txt`
 - Install dev: `pip install -r requirements.txt && pip install -r requirements-dev.txt`
-- Test all: `python3 -m pytest tests/` (~696 tests, ~15s) after dev install, or `bash scripts/test-safe.sh`, or `python3 run_tests.py` (bootstraps `./env` + dev deps if pytest is missing)
+- Test all: `python3 -m pytest tests/` (~720 tests, ~15s) after dev install, or `bash scripts/test-safe.sh`, or `python3 run_tests.py` (bootstraps `./env` + dev deps if pytest is missing)
 - Test single file: `python3 -m pytest tests/test_<name>.py -v`
 - Lint: `python3 -m flake8 .`
 - Format: `python3 -m black . && python3 -m isort .`
-- Full check: `make check` (lint + test)
+- Full check: `make check` (lint + typecheck + test; matches CI)
 - Run app: `python3 main.py` (interactive) or `python3 main.py --mode markitdown --no-interactive`
 - Self-test: `python3 main.py --test`
 - Coverage: `python3 -m pytest tests/ --cov=. --cov-report=html --cov-report=term-missing`
@@ -52,7 +52,7 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 
 - Stale lint: `python3 -m flake8 .` (config is in `.flake8`, 120 char line length, black-compatible ignores)
 - Failing tests: `python3 -m pytest tests/ -v --tb=long` — tests mock API calls so they pass without a key
-- Type checking: `pyrightconfig.json` exists but typeCheckingMode is off
+- Type checking: `python3 -m pyright` (CI runs this; `make typecheck` mirrors it). `pyrightconfig.json` uses `typeCheckingMode: basic` with several reports disabled and `tests/` excluded.
 
 ## Gotchas
 
@@ -82,5 +82,5 @@ The subagent gate hook (`.cursor/hooks/subagent-gate.sh`) restricts spawning to 
 
 ## PRs
 
-- Before PR: `make check` (runs lint + tests)
+- Before PR: `make check` (runs lint + typecheck + tests, mirroring CI)
 - Include summary, risk, and validation steps.

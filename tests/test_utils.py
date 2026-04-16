@@ -1103,5 +1103,58 @@ class TestValidateFilePathTraversal:
         assert err is not None and "input directory" in err.lower()
 
 
+class TestToConversionResult:
+    """utils.to_conversion_result normalises converter return shapes."""
+
+    def test_passthrough_conversion_result(self, tmp_path):
+        original = utils.ConversionResult(True, tmp_path / "a.md", None)
+        assert utils.to_conversion_result(original) is original
+
+    def test_three_tuple_with_path(self, tmp_path):
+        out = tmp_path / "out.md"
+        result = utils.to_conversion_result((True, out, None))
+        assert result.success is True
+        assert result.output_path == out
+        assert result.error is None
+
+    def test_three_tuple_with_non_path_payload(self):
+        # Some converters return (bool, str_or_dict, error); the payload
+        # should be dropped but success/error preserved.
+        result = utils.to_conversion_result((False, "stringy payload", "boom"))
+        assert result.success is False
+        assert result.output_path is None
+        assert result.error == "boom"
+
+    def test_two_tuple_success_error(self):
+        result = utils.to_conversion_result((False, "nope"))
+        assert result.success is False
+        assert result.output_path is None
+        assert result.error == "nope"
+
+    def test_bool_result(self):
+        assert utils.to_conversion_result(True) == utils.ConversionResult(True, None, None)
+        assert utils.to_conversion_result(False) == utils.ConversionResult(False, None, None)
+
+    def test_unknown_result_type(self):
+        result = utils.to_conversion_result(object())
+        assert result.success is False
+        assert result.error is not None and "unknown" in result.error.lower()
+
+
+class TestMistralOcrSizeError:
+    """utils.mistral_ocr_size_error returns a message only above the cap."""
+
+    def test_within_limit_returns_none(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_OCR_MAX_FILE_SIZE_MB", 100)
+        assert utils.mistral_ocr_size_error(50.0) is None
+
+    def test_above_limit_returns_message(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_OCR_MAX_FILE_SIZE_MB", 100)
+        msg = utils.mistral_ocr_size_error(150.0)
+        assert msg is not None
+        assert "too large" in msg.lower()
+        assert "100" in msg
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

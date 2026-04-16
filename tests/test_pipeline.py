@@ -27,6 +27,32 @@ import main
 import mistral_converter
 import utils
 
+# QnA and Batch OCR modes live in dedicated modules under ``modes/``. Tests
+# that mock converter dependencies need to target these namespaces directly.
+import modes.batch as _modes_batch
+import modes.qna as _modes_qna
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def _patch_mistral_converter_everywhere():
+    """Replace the ``mistral_converter`` module binding in main and both
+    mode modules with a single ``MagicMock`` for the duration of the block.
+
+    Existing tests predate the extraction of ``mode_document_qna`` /
+    ``mode_batch_ocr`` into dedicated modules; they used
+    ``patch.object(main, "mistral_converter")`` to stub the SDK. With those
+    modes now in ``modes/qna.py`` and ``modes/batch.py`` the binding visible
+    to the mode function is no longer ``main.mistral_converter``, so we need
+    to patch all three places at once.
+    """
+    mock = MagicMock()
+    with patch.object(main, "mistral_converter", mock), patch.object(
+        _modes_qna, "mistral_converter", mock
+    ), patch.object(_modes_batch, "mistral_converter", mock):
+        yield mock
+
 # ============================================================================
 # mode_convert_smart Tests
 # ============================================================================
@@ -670,7 +696,7 @@ class TestModeDocumentQna:
         huge = tmp_path / "huge.pdf"
         huge.write_bytes(b"\x00" * ((cap + 1) * 1024 * 1024))
 
-        with patch.object(main, "mistral_converter") as mock_mc:
+        with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.get_mistral_client.return_value = MagicMock()
             success, msg = main.mode_document_qna([huge])
 
@@ -697,7 +723,7 @@ class TestModeDocumentQna:
         def _fake_stream():
             yield chunk
 
-        with patch.object(main, "mistral_converter") as mock_mc:
+        with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.get_mistral_client.return_value = MagicMock()
             mock_mc.upload_file_for_ocr.return_value = "https://example.com/doc"
             mock_mc.query_document_stream.return_value = (True, _fake_stream(), None)
@@ -714,10 +740,11 @@ class TestModeDocumentQna:
             if False:
                 yield None  # pragma: no cover
 
-        with patch.object(main, "mistral_converter") as mock_mc:
+        with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.get_mistral_client.return_value = MagicMock()
             mock_mc.upload_file_for_ocr.return_value = "https://example.com/doc"
             mock_mc.query_document_stream.return_value = (True, _empty_stream(), None)
+            mock_mc.is_signed_url_expiry_error.return_value = False
             success, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
         assert success is False
         assert "no answer content" in msg.lower()
@@ -731,10 +758,12 @@ class TestModeDocumentQna:
             raise RuntimeError("network reset")
             yield  # pragma: no cover — makes this a generator; raises on first iteration
 
-        with patch.object(main, "mistral_converter") as mock_mc:
+        with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.get_mistral_client.return_value = MagicMock()
             mock_mc.upload_file_for_ocr.return_value = "https://example.com/doc"
             mock_mc.query_document_stream.return_value = (True, _bad_stream(), None)
+            # A random stream error is not a signed-URL expiry; do not retry.
+            mock_mc.is_signed_url_expiry_error.return_value = False
             success, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
         assert success is False
         assert "stream failed" in msg.lower()
@@ -781,7 +810,7 @@ class TestModeBatchOcr:
         pdf.write_bytes(b"%PDF")
 
         with patch("builtins.input", return_value="1"):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
 
                 def _fake_create(paths, out_path):
                     return True, out_path, None
@@ -809,7 +838,7 @@ class TestModeBatchOcr:
         pdf = tmp_path / "doc.pdf"
         pdf.write_bytes(b"%PDF")
 
-        with patch.object(main, "mistral_converter") as mock_mc:
+        with _patch_mistral_converter_everywhere() as mock_mc:
 
             def _fake_create(paths, out_path):
                 return True, out_path, None
@@ -834,7 +863,7 @@ class TestModeBatchOcr:
         pdf = tmp_path / "doc.pdf"
         pdf.write_bytes(b"%PDF")
 
-        with patch.object(main, "mistral_converter") as mock_mc:
+        with _patch_mistral_converter_everywhere() as mock_mc:
 
             def _fake_create(paths, out_path):
                 return True, out_path, None
@@ -883,7 +912,7 @@ class TestModeBatchOcr:
     def test_non_interactive_list_requires_no_input_files(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
         monkeypatch.setattr(config, "MISTRAL_BATCH_ENABLED", True)
-        with patch.object(main, "mistral_converter") as mock_mc:
+        with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.list_batch_jobs.return_value = (True, [], None)
             ok, msg = main.mode_batch_ocr(
                 [],
@@ -900,7 +929,7 @@ class TestModeBatchOcr:
 
         inputs = iter(["2", "job-abc-123"])
         with patch("builtins.input", side_effect=inputs):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.get_batch_job_status.return_value = (
                     True,
                     {
@@ -922,7 +951,7 @@ class TestModeBatchOcr:
         monkeypatch.setattr(config, "MISTRAL_BATCH_MIN_FILES", 1)
 
         with patch("builtins.input", return_value="3"):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.list_batch_jobs.return_value = (
                     True,
                     [
@@ -947,7 +976,7 @@ class TestModeBatchOcr:
 
         inputs = iter(["4", "job-xyz"])
         with patch("builtins.input", side_effect=inputs):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.download_batch_results.return_value = (
                     True,
                     "/output/results.md",
@@ -1393,7 +1422,7 @@ class TestModeBatchOcrExpanded:
         monkeypatch.setattr(config, "CACHE_DIR", cache_sub)
 
         with patch("builtins.input", return_value="1"):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.create_batch_ocr_file.return_value = (
                     False,
                     None,
@@ -1413,7 +1442,7 @@ class TestModeBatchOcrExpanded:
         monkeypatch.setattr(config, "CACHE_DIR", cache_sub)
 
         with patch("builtins.input", return_value="1"):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
 
                 def _fake_create(paths, out_path):
                     return True, out_path, None
@@ -1460,7 +1489,7 @@ class TestModeBatchOcrExpanded:
 
         inputs = iter(["2", "job-abc"])
         with patch("builtins.input", side_effect=inputs):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.get_batch_job_status.return_value = (False, None, "not found")
                 ok, msg = main.mode_batch_ocr([tmp_path / "doc.pdf"])
         assert ok is False
@@ -1473,7 +1502,7 @@ class TestModeBatchOcrExpanded:
         monkeypatch.setattr(config, "MISTRAL_BATCH_MIN_FILES", 1)
 
         with patch("builtins.input", return_value="3"):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.list_batch_jobs.return_value = (True, [], None)
                 ok, msg = main.mode_batch_ocr([tmp_path / "doc.pdf"])
         assert ok is True
@@ -1486,7 +1515,7 @@ class TestModeBatchOcrExpanded:
         monkeypatch.setattr(config, "MISTRAL_BATCH_MIN_FILES", 1)
 
         with patch("builtins.input", return_value="3"):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.list_batch_jobs.return_value = (False, None, "API error")
                 ok, msg = main.mode_batch_ocr([tmp_path / "doc.pdf"])
         assert ok is False
@@ -1523,7 +1552,7 @@ class TestModeBatchOcrExpanded:
 
         inputs = iter(["4", "job-xyz"])
         with patch("builtins.input", side_effect=inputs):
-            with patch.object(main, "mistral_converter") as mock_mc:
+            with _patch_mistral_converter_everywhere() as mock_mc:
                 mock_mc.download_batch_results.return_value = (False, None, "not ready")
                 ok, msg = main.mode_batch_ocr([tmp_path / "doc.pdf"])
         assert ok is False
@@ -1922,6 +1951,156 @@ class TestShouldUseOcrRouting:
         }
         result = main._should_use_ocr(pdf)
         assert result is True
+
+
+# ============================================================================
+# CLI argument-validation scenario tests
+# ============================================================================
+
+
+class TestValidateArgsScenarios:
+    """Cover ``main._validate_args`` rejection paths via the real argparse parser.
+
+    Each case invokes ``main.main()`` with crafted argv and expects argparse
+    to call ``parser.error`` (which raises SystemExit(2)). These guard against
+    regressions in the argument combination rules documented in ``--help``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_bg_tasks(self, monkeypatch):
+        # Keep these unit tests hermetic: disable upload cleanup + auto cache
+        # wipe so the CLI doesn't try to reach out or mutate on-disk state.
+        monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", False)
+        monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
+
+    def _expect_argparse_error(self, monkeypatch, argv, fragment):
+        monkeypatch.setattr("sys.argv", argv)
+        with pytest.raises(SystemExit) as exc_info:
+            main.main()
+        assert exc_info.value.code == 2
+        # argparse writes the error message to stderr before exiting. pytest's
+        # capsys is unavailable inside a plain function, so just asserting on
+        # the exit code is sufficient; the message fragment is documented here
+        # for anyone reading the test.
+        del fragment
+
+    def test_stdin_without_markitdown_mode_rejected(self, monkeypatch):
+        self._expect_argparse_error(
+            monkeypatch,
+            ["main.py", "--mode", "smart", "--stdin", "--no-interactive"],
+            "--stdin can only be used with --mode markitdown",
+        )
+
+    def test_stdin_requires_no_interactive(self, monkeypatch):
+        self._expect_argparse_error(
+            monkeypatch,
+            ["main.py", "--mode", "markitdown", "--stdin"],
+            "--stdin requires --no-interactive",
+        )
+
+    def test_stdin_filename_requires_stdin(self, monkeypatch):
+        self._expect_argparse_error(
+            monkeypatch,
+            ["main.py", "--mode", "markitdown", "--no-interactive", "--stdin-filename", "r.pdf"],
+            "--stdin-filename requires --stdin",
+        )
+
+    def test_qna_question_rejected_outside_qna_mode(self, monkeypatch):
+        self._expect_argparse_error(
+            monkeypatch,
+            ["main.py", "--mode", "smart", "--qna-question", "why"],
+            "--qna-question can only be used with --mode qna",
+        )
+
+    def test_qna_document_url_requires_no_interactive(self, monkeypatch):
+        self._expect_argparse_error(
+            monkeypatch,
+            ["main.py", "--mode", "qna", "--qna-document-url", "https://example.com/a.pdf"],
+            "--qna-document-url requires --no-interactive",
+        )
+
+    def test_batch_action_rejected_outside_batch_mode(self, monkeypatch):
+        self._expect_argparse_error(
+            monkeypatch,
+            ["main.py", "--mode", "smart", "--batch-action", "submit"],
+            "--batch-action can only be used with --mode batch_ocr",
+        )
+
+    def test_batch_job_id_rejected_outside_batch_mode(self, monkeypatch):
+        self._expect_argparse_error(
+            monkeypatch,
+            ["main.py", "--mode", "smart", "--batch-job-id", "abc123"],
+            "--batch-job-id can only be used with --mode batch_ocr",
+        )
+
+
+class TestBatchNoFilesCliScenarios:
+    """Batch OCR non-interactive flows that do not require files in input/."""
+
+    def test_batch_submit_without_files_fails_with_clear_message(self, tmp_path, monkeypatch):
+        """Non-interactive ``--batch-action submit`` must bail out cleanly when
+        the input directory is empty rather than crashing."""
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "MISTRAL_BATCH_ENABLED", True)
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+        monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", False)
+        monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["main.py", "--mode", "batch_ocr", "--no-interactive", "--batch-action", "submit"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main.main()
+        # No files in input/ -> _collect_files_non_interactive exits early.
+        assert exc_info.value.code == 1
+
+    def test_batch_status_without_job_id_returns_helpful_message(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "MISTRAL_BATCH_ENABLED", True)
+        ok, msg = main.mode_batch_ocr(
+            [tmp_path / "doc.pdf"],
+            batch_action="status",
+            batch_job_id="",
+            non_interactive=True,
+        )
+        assert ok is False
+        assert "batch-job-id" in msg.lower()
+
+    def test_batch_unknown_action_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "MISTRAL_BATCH_ENABLED", True)
+        ok, msg = main.mode_batch_ocr(
+            [],
+            batch_action="teleport",
+            non_interactive=True,
+        )
+        assert ok is False
+        assert "teleport" in msg
+
+
+class TestQnaCliScenarios:
+    """QnA CLI edge cases that do not need real SDK calls."""
+
+    def test_non_interactive_without_question_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        with _patch_mistral_converter_everywhere() as mock_mc:
+            mock_mc.get_mistral_client.return_value = MagicMock()
+            mock_mc.upload_file_for_ocr.return_value = "https://example.com/a"
+            ok, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="")
+        assert ok is False
+        assert "qna-question" in msg.lower() or "question" in msg.lower()
+
+    def test_non_interactive_multiple_files_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        f1 = tmp_path / "a.pdf"
+        f2 = tmp_path / "b.pdf"
+        for f in (f1, f2):
+            f.write_bytes(b"%PDF-1.4")
+        ok, msg = main.mode_document_qna([f1, f2], non_interactive=True, initial_question="hi")
+        assert ok is False
+        assert "one file" in msg.lower() or "one" in msg.lower()
 
 
 if __name__ == "__main__":

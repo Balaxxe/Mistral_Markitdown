@@ -65,9 +65,18 @@ pick_base_python() {
 
 ensure_venv() {
   local base_py="$1"
-  if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-    echo "INFO: creating virtualenv at $VENV_DIR" >&2
-    "$base_py" -m venv "$VENV_DIR"
+  if [[ -x "$VENV_DIR/bin/python" ]]; then
+    return 0
+  fi
+  echo "INFO: creating virtualenv at $VENV_DIR" >&2
+  # Debian/Ubuntu often ship ``python3.N`` without ``ensurepip`` (the
+  # ``python3-venv`` apt package). In that case, ``python -m venv`` leaves
+  # behind a partially populated directory and exits non-zero. Retry with
+  # ``--without-pip`` and let ``ensure_venv_has_pip`` bootstrap pip.
+  if ! "$base_py" -m venv "$VENV_DIR" 2>/dev/null; then
+    rm -rf "$VENV_DIR"
+    echo "INFO: venv with ensurepip failed; retrying with --without-pip (will bootstrap pip via get-pip.py)." >&2
+    "$base_py" -m venv --without-pip "$VENV_DIR"
   fi
 }
 

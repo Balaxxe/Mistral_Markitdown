@@ -57,8 +57,27 @@ def _pick_base_python() -> Path | None:
 
 
 def _ensure_venv(base: Path) -> None:
-    if not VENV_PYTHON.is_file():
+    """Create ``env/`` using the supplied base Python.
+
+    On Debian/Ubuntu the stock ``python3.N`` package ships without
+    ``ensurepip``, so ``python -m venv env`` fails with a message directing
+    the user to ``apt install python3-venv``. We catch that failure, wipe the
+    half-populated ``env/`` directory, and retry with ``--without-pip``;
+    :func:`_bootstrap_pip_in_venv` can then fetch pip via ``get-pip.py``.
+    """
+    if VENV_PYTHON.is_file():
+        return
+    try:
         subprocess.check_call([str(base), "-m", "venv", str(VENV_DIR)])
+    except subprocess.CalledProcessError:
+        if VENV_DIR.is_dir():
+            shutil.rmtree(VENV_DIR, ignore_errors=True)
+        print(
+            "INFO: venv with ensurepip failed; retrying with --without-pip "
+            "(will bootstrap pip via get-pip.py).",
+            file=sys.stderr,
+        )
+        subprocess.check_call([str(base), "-m", "venv", "--without-pip", str(VENV_DIR)])
 
 
 def _venv_has_pytest() -> bool:

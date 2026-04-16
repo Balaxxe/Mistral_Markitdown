@@ -30,6 +30,7 @@ __all__ = [
     "convert_pdf_to_images",
     "coalesce_tables",
     "analyze_file_content",
+    "reset_analyze_file_content_cache",
 ]
 
 try:
@@ -910,16 +911,32 @@ def _analyze_pdf_text_layer_pypdf(file_path: Path, analysis: Dict[str, Any]) -> 
         logger.debug("pypdf PDF analysis failed: %s", e)
 
 
-def analyze_file_content(file_path: Path) -> Dict[str, Any]:
-    """
-    Analyze file to determine optimal processing strategy.
+# Small in-process cache for analyze_file_content results.
+#
+# Smart-mode routing runs this twice for every PDF (once from main._content_prefers_mistral_ocr,
+# once from mistral_converter._estimate_session_pages_for_ocr). The analysis is
+# deterministic w.r.t. path + stat signature, so we memoize per (path, mtime_ns, size).
+# The cache is bounded to avoid unbounded growth over long-running processes.
+_ANALYSIS_CACHE_MAX_ENTRIES = 256
+_analysis_cache: "Dict[Tuple[str, int, int], Dict[str, Any]]" = {}
+_analysis_cache_lock = threading.Lock()
 
-    Args:
-        file_path: Path to file
 
-    Returns:
-        Dictionary with content analysis
+def _stat_key_for_analysis(file_path: Path) -> Optional[Tuple[str, int, int]]:
+    """Return a cache key based on file identity + stat signature.
+
+    Returns None if the file cannot be stat'd, so callers fall through to the
+    uncached path and surface the error naturally.
     """
+    try:
+        st = file_path.stat()
+    except OSError:
+        return None
+    return (str(file_path.resolve()), st.st_mtime_ns, st.st_size)
+
+
+def _analyze_file_content_uncached(file_path: Path) -> Dict[str, Any]:
+    """Perform PDF/image/text file analysis without consulting the cache."""
     analysis = {
         "file_type": file_path.suffix.lower().lstrip("."),
         "file_size_mb": file_path.stat().st_size / (1024 * 1024),
@@ -979,3 +996,53 @@ def analyze_file_content(file_path: Path) -> Dict[str, Any]:
         analysis["is_complex"] = True
 
     return analysis
+
+
+def analyze_file_content(file_path: Path) -> Dict[str, Any]:
+    """Analyze file to determine optimal processing strategy.
+
+    Results are memoized per ``(resolved_path, mtime_ns, size)`` to avoid
+    re-running pdfplumber twice during smart routing. A mutation to the file
+    (new mtime or size) invalidates the cached entry automatically. Callers
+    must not mutate the returned dict in place if they care about isolation;
+    a defensive copy is returned on every lookup.
+
+    Args:
+        file_path: Path to file
+
+    Returns:
+        Dictionary with content analysis
+    """
+    key = _stat_key_for_analysis(file_path)
+    if key is None:
+        return _analyze_file_content_uncached(file_path)
+
+    with _analysis_cache_lock:
+        cached = _analysis_cache.get(key)
+    if cached is not None:
+        return dict(cached)
+
+    analysis = _analyze_file_content_uncached(file_path)
+
+    with _analysis_cache_lock:
+        if len(_analysis_cache) >= _ANALYSIS_CACHE_MAX_ENTRIES:
+            # Simple FIFO eviction; avoids pulling in functools.lru_cache which
+            # cannot key on Path+stat together and would hold references after
+            # the file has been deleted.
+            try:
+                oldest = next(iter(_analysis_cache))
+                _analysis_cache.pop(oldest, None)
+            except StopIteration:
+                pass
+        _analysis_cache[key] = dict(analysis)
+
+    return analysis
+
+
+def reset_analyze_file_content_cache() -> None:
+    """Clear the in-process analyze_file_content memoization cache.
+
+    Exposed for tests and maintenance flows that mutate files in place.
+    """
+    with _analysis_cache_lock:
+        _analysis_cache.clear()

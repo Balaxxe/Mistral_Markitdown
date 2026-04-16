@@ -1,7 +1,7 @@
 # Enhanced Document Converter - Makefile
 # Convenience commands for development and testing
 
-.PHONY: help install install-dev test lint format clean run check dist publish coverage security-audit dev-setup
+.PHONY: help install install-dev test lint typecheck format clean run check dist publish coverage security-audit dev-setup
 
 help:
 	@echo "Enhanced Document Converter - Development Commands"
@@ -11,6 +11,7 @@ help:
 	@echo "  make install-dev    - Install development dependencies"
 	@echo "  make test           - Run test suite"
 	@echo "  make lint           - Run linters (flake8)"
+	@echo "  make typecheck      - Run pyright type checks (matches CI)"
 	@echo "  make format         - Format code with black and isort"
 	@echo "  make coverage       - Run tests with coverage report"
 	@echo "  make security-audit - Run pip-audit dependency scan"
@@ -31,6 +32,9 @@ test:
 lint:
 	python3 -m flake8 .
 
+typecheck:
+	python3 -m pyright
+
 format:
 	python3 -m black .
 	python3 -m isort .
@@ -46,7 +50,7 @@ clean:
 run:
 	python3 main.py
 
-check: lint test
+check: lint typecheck test
 	@echo "All checks passed!"
 
 coverage:

@@ -11,13 +11,15 @@ Documentation references:
 - JSON Schema: https://json-schema.org/
 """
 
-import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ConfigDict, Field
 
-logger = logging.getLogger("document_converter")
+# Use the shared application logger configured in utils.setup_logging so all
+# modules emit with the same handlers/formatters. utils does not depend on
+# schemas, so importing it here is safe (no cycle).
+from utils import logger  # noqa: E402  (import after third-party is intentional)
 
 
 class _BaseSchema(BaseModel):

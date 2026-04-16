@@ -160,7 +160,7 @@ Quality score < 40 with many "weak pages":
 
 1. Check `CACHE_DURATION_HOURS` in `.env` (default: 24)
 2. Verify the `cache/` directory exists and is writable
-3. Run System Status (mode 7) to see cache statistics
+3. Run System Status (interactive menu option 7, or `python3 main.py --mode status`) to see cache statistics
 4. Set `AUTO_CLEAR_CACHE=true` to auto-expire old entries
 
 ---
@@ -168,6 +168,6 @@ Quality score < 40 with many "weak pages":
 ## Reporting Issues
 
 1. Check `logs/` for detailed error messages
-2. Run System Status (mode 7) for diagnostics
+2. Run System Status (interactive menu option 7, or `python3 main.py --mode status`) for diagnostics
 3. Review `.env` against [CONFIGURATION.md](CONFIGURATION.md)
 4. Open a GitHub issue with: OS, Python version, sanitized config, steps to reproduce, and error output

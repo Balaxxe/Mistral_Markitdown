@@ -26,7 +26,6 @@ import socket
 import sys
 import threading
 import time
-import traceback
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as DnsTimeoutError
 from concurrent.futures import as_completed
@@ -127,6 +126,53 @@ def _http_client_exceptions() -> Tuple[type, ...]:
         httpx.HTTPError,
         httpx.TimeoutException,
     )
+
+
+# Tokens that strongly indicate a signed-URL has expired or is being rejected
+# by the object store (as opposed to Mistral API auth failing). Used by the
+# QnA retry path to decide whether it is worth re-uploading and retrying once.
+_SIGNED_URL_EXPIRY_HINTS: Tuple[str, ...] = (
+    "signed url",
+    "url has expired",
+    "url expired",
+    "signature expired",
+    "signature mismatch",
+    "expired signature",
+    "access denied",
+    "failed to fetch document",
+    "could not download",
+    "403 forbidden",
+    "forbidden (403)",
+)
+
+# Tokens that mean the failure is permanent (API key / account) and retrying
+# with a new URL will not help.
+_PERMANENT_AUTH_HINTS: Tuple[str, ...] = (
+    "401",
+    "unauthorized",
+    "api key",
+    "invalid api key",
+    "authentication failed",
+)
+
+
+def is_signed_url_expiry_error(message: Optional[str]) -> bool:
+    """Classify a QnA/OCR error message as a likely signed-URL expiry.
+
+    Returns True only for messages that look like the object store rejected
+    the signed URL (e.g. 403 from the URL host, "signed URL has expired").
+    Returns False for Mistral API auth failures or any non-matching text.
+
+    This replaces earlier substring heuristics that treated any occurrence of
+    "url" as retryable (which produced false positives on messages like
+    "Failed to resolve document URL").
+    """
+    if not message:
+        return False
+    lowered = message.lower()
+    if any(hint in lowered for hint in _PERMANENT_AUTH_HINTS):
+        return False
+    return any(hint in lowered for hint in _SIGNED_URL_EXPIRY_HINTS)
 
 
 # ============================================================================
@@ -277,6 +323,13 @@ def reset_session_page_counter() -> None:
 
 _client_lock = threading.Lock()
 _client_instance: Optional["Mistral"] = None
+
+# Single daemon executor for DNS resolution during SSRF URL validation. Reused
+# across every _resolve_and_validate_dns() call so we don't spin up a fresh
+# thread pool per request. Size is 2 so a slow getaddrinfo() on one request
+# doesn't completely block a concurrent validator; increase if you notice
+# contention.
+_dns_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mistral-dns")
 
 
 def get_mistral_client() -> Optional[Mistral]:
@@ -954,16 +1007,14 @@ def build_ocr_process_kwargs(
 def _validate_file_for_ocr(
     file_path: Path, file_size_mb: float
 ) -> Optional[Tuple[bool, Optional[Dict[str, Any]], Optional[str]]]:
-    """Return an early-exit error tuple if the file cannot be processed, else None."""
-    if file_size_mb > config.MISTRAL_OCR_MAX_FILE_SIZE_MB:
-        return (
-            False,
-            None,
-            (
-                f"File too large for Mistral OCR ({file_size_mb:.1f} MB). "
-                f"Maximum allowed: {config.MISTRAL_OCR_MAX_FILE_SIZE_MB} MB"
-            ),
-        )
+    """Return an early-exit error tuple if the file cannot be processed, else None.
+
+    The size cap and its message live in :func:`utils.mistral_ocr_size_error`
+    so up-front CLI validation and this runtime check stay in sync.
+    """
+    msg = utils.mistral_ocr_size_error(file_size_mb)
+    if msg is not None:
+        return False, None, msg
     return None
 
 
@@ -1129,8 +1180,6 @@ def process_with_ocr(
             return False, None, "Empty response from Mistral OCR"
 
     except Exception as e:
-        error_msg = f"Error processing with Mistral OCR: {e}"
-
         status_code = getattr(e, "status_code", None) or getattr(e, "code", None)
         err_str = str(e)
         if status_code == 401 or (status_code is None and ("401" in err_str or "Unauthorized" in err_str)):
@@ -1138,10 +1187,14 @@ def process_with_ocr(
                 "Mistral API authentication failed (401 Unauthorized). "
                 "Please verify your API key has OCR access at https://console.mistral.ai/"
             )
+            logger.error(error_msg)
         elif status_code == 403 or (status_code is None and ("403" in err_str or "Forbidden" in err_str)):
             error_msg = "Access denied to Mistral OCR (403 Forbidden). This feature may require a paid plan."
-
-        logger.error(error_msg)
+            logger.error(error_msg)
+        else:
+            error_msg = f"Error processing with Mistral OCR: {e}"
+            # Unexpected failure path: preserve traceback for debugging.
+            logger.exception("Unexpected error processing with Mistral OCR")
         return False, None, error_msg
     finally:
         if reserved_pages:
@@ -1395,8 +1448,8 @@ def _parse_ocr_response(response: Any, file_path: Path) -> Dict[str, Any]:
         )
 
     except Exception as e:
-        logger.error("Error parsing OCR response: %s", e)
-        logger.debug("Traceback: %s", traceback.format_exc())
+        # Preserve full traceback so unexpected parser failures can be diagnosed from logs.
+        logger.exception("Error parsing OCR response: %s", e)
         result["parse_error"] = str(e)
 
     return result
@@ -2126,20 +2179,21 @@ def _validate_ip_str(ip_str: str, source: str) -> Tuple[bool, Optional[str]]:
 def _resolve_and_validate_dns(hostname: str) -> Tuple[bool, Optional[str]]:
     """Resolve *hostname* via DNS and reject any private/internal addresses."""
     try:
-        _pool = ThreadPoolExecutor(max_workers=1)
+        _future = _dns_executor.submit(socket.getaddrinfo, hostname, None, proto=socket.IPPROTO_TCP)
         try:
-            _future = _pool.submit(socket.getaddrinfo, hostname, None, proto=socket.IPPROTO_TCP)
-            try:
-                infos = _future.result(timeout=config.MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS)
-            except DnsTimeoutError:
-                raise socket.timeout("DNS resolution timed out")
-            resolved_ips = {str(info[4][0]) for info in infos if info and info[4]}
-            for ip in resolved_ips:
-                ok, err = _validate_ip_str(ip, f"{hostname} -> {ip}")
-                if not ok:
-                    return ok, err
-        finally:
-            _pool.shutdown(wait=False, cancel_futures=True)
+            infos = _future.result(timeout=config.MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS)
+        except DnsTimeoutError:
+            # Best-effort cancel so the worker thread returns to the pool instead
+            # of staying blocked in getaddrinfo(). The C call is not actually
+            # interruptible, but marking the future cancelled keeps the pool
+            # clean for future callers.
+            _future.cancel()
+            raise socket.timeout("DNS resolution timed out")
+        resolved_ips = {str(info[4][0]) for info in infos if info and info[4]}
+        for ip in resolved_ips:
+            ok, err = _validate_ip_str(ip, f"{hostname} -> {ip}")
+            if not ok:
+                return ok, err
     except socket.gaierror:
         if config.MISTRAL_DOCUMENT_URL_STRICT_DNS:
             return (
@@ -2402,7 +2456,11 @@ def query_document_file(
 
     except Exception as e:
         error_msg = f"Error querying document file: {e}"
-        logger.error(error_msg)
+        http_types = _http_client_exceptions()
+        if http_types and isinstance(e, http_types):
+            logger.error(error_msg)
+        else:
+            logger.exception("Unexpected error querying document file")
         return False, None, error_msg
 
 
@@ -2540,7 +2598,7 @@ def create_batch_ocr_file(
 
     except Exception as e:
         error_msg = f"Error creating batch OCR file: {e}"
-        logger.error(error_msg)
+        logger.exception("Unexpected error creating batch OCR file")
         return False, None, error_msg
 
 
@@ -2699,7 +2757,11 @@ def get_batch_job_status(
 
     except Exception as e:
         error_msg = f"Error getting batch job status: {e}"
-        logger.error(error_msg)
+        http_types = _http_client_exceptions()
+        if http_types and isinstance(e, http_types):
+            logger.error(error_msg)
+        else:
+            logger.exception("Unexpected error getting batch job status")
         return False, None, error_msg
 
 
@@ -2763,7 +2825,11 @@ def download_batch_results(
 
     except Exception as e:
         error_msg = f"Error downloading batch results: {e}"
-        logger.error(error_msg)
+        http_types = _http_client_exceptions()
+        if http_types and isinstance(e, http_types):
+            logger.error(error_msg)
+        else:
+            logger.exception("Unexpected error downloading batch results")
         return False, None, error_msg
 
 
@@ -2826,5 +2892,9 @@ def list_batch_jobs(
 
     except Exception as e:
         error_msg = f"Error listing batch jobs: {e}"
-        logger.error(error_msg)
+        http_types = _http_client_exceptions()
+        if http_types and isinstance(e, http_types):
+            logger.error(error_msg)
+        else:
+            logger.exception("Unexpected error listing batch jobs")
         return False, None, error_msg

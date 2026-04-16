@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `modes/` package containing `mode_document_qna`, `mode_batch_ocr`, `mode_system_status`, and `mode_maintenance`, extracted from `main.py` (main.py dropped from ~1,390 to ~915 lines)
+- `utils.to_conversion_result()` normalises converter returns (``ConversionResult``/tuple/bool) at the thread-pool boundary
+- `utils.mistral_ocr_size_error()` centralises the OCR file-size check shared by `utils.validate_file` and `mistral_converter._validate_file_for_ocr`
+- `mistral_converter.is_signed_url_expiry_error()` classifier replaces the old substring-based QnA retry heuristic and is exported for reuse
+- In-process cache for `local_converter.analyze_file_content` keyed on `(resolved_path, mtime_ns, size)` so smart-mode routing no longer re-opens the same PDF twice
+- Module-level `_dns_executor` reused by `_resolve_and_validate_dns` (no more per-validation ThreadPoolExecutor)
+- New test files `tests/test_mistral_url_validation.py`, `tests/test_mistral_qna.py`, `tests/test_mistral_batch.py` split from the 4,250-line `tests/test_mistral_converter.py`
+- `TestValidateArgsScenarios`, `TestBatchNoFilesCliScenarios`, `TestQnaCliScenarios` in `tests/test_pipeline.py` exercising argparse rejection paths and non-interactive edge cases
+- `TestIsSignedUrlExpiryError`, `TestToConversionResult`, `TestMistralOcrSizeError` unit tests for the new helpers (23 test additions total)
+- `make typecheck` target and pyright integration into `make check` so local `make check` now mirrors CI
+
+### Changed
+
+- `.pre-commit-config.yaml` bumped to match `requirements-dev.txt`: black 26.3.0, flake8 7.3.0, isort 8.0.0; replaced the mypy hook with pyright v1.1.408
+- Narrowed broad `except Exception` + `logger.error` in `mistral_converter.py` to use `logger.exception` on the unexpected branches of OCR, QnA file upload, batch submit/status/download/list paths (preserves tracebacks in logs)
+- QnA retry no longer substring-matches error text: `modes.qna.mode_document_qna` calls `mistral_converter.is_signed_url_expiry_error()` which rejects permanent-auth hints before checking signed-URL expiry tokens
+- `schemas.py` now reuses `utils.logger` instead of wiring its own `logging.getLogger("document_converter")`
+- `.flake8` per-file ignores tightened: `main.py` no longer needs `C901`; new split test files covered by file-scoped `F401,W391`
+- Test count: 723 (up from ~696)
+
+### Fixed
+
+- `--mode qna` retry loop no longer triggers on benign messages containing the word "url" (e.g. `"Failed to resolve document URL"`), and always treats 401/Unauthorized as non-retryable
+- OCR response parsing and batch API errors now emit full tracebacks for unexpected failures instead of a truncated one-line `logger.error`
+
+### Documentation
+
+- `AGENTS.md` type-checking note now accurately describes `pyrightconfig.json` (`typeCheckingMode: basic`, select reports disabled) and points at `python3 -m pyright` / `make typecheck`
+- `README.md` and `KNOWN_ISSUES.md` cross-reference menu option 7 with `python3 main.py --mode status`
+
 ## [3.0.2] - 2026-03-29
 
 ### Added

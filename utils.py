@@ -26,11 +26,50 @@ import config
 
 
 class ConversionResult(NamedTuple):
-    """Standardised return type for all converter functions."""
+    """Canonical return type for converter and orchestration functions.
+
+    Internal converters may still return ``Tuple[bool, Optional[T], Optional[str]]``
+    for backward compatibility; use :func:`to_conversion_result` at module
+    boundaries (thread pool, CLI dispatch) to normalise any of those shapes
+    into this one.
+    """
 
     success: bool
     output_path: Optional[Path] = None
     error: Optional[str] = None
+
+
+def to_conversion_result(result: Any) -> "ConversionResult":
+    """Normalise a converter's output into a :class:`ConversionResult`.
+
+    Accepted shapes:
+
+    * ``ConversionResult`` — returned as-is.
+    * ``(success, output_path_or_payload, error)`` 3-tuple — the second slot
+      is preserved as ``output_path`` when it is a :class:`pathlib.Path`,
+      otherwise it is dropped and the error (if present) is preserved.
+    * ``(success, error)`` 2-tuple — mapped to ``(success, None, error)``.
+    * ``bool`` — mapped to ``(bool, None, None)``.
+
+    Any other input yields ``(False, None, "unknown converter result")``
+    so the caller surfaces a clear failure rather than crashing.
+    """
+    if isinstance(result, ConversionResult):
+        return result
+    if isinstance(result, tuple):
+        if len(result) >= 3:
+            success = bool(result[0])
+            maybe_path = result[1]
+            output_path = maybe_path if isinstance(maybe_path, Path) else None
+            err = result[2]
+            return ConversionResult(success=success, output_path=output_path, error=err)
+        if len(result) == 2:
+            return ConversionResult(success=bool(result[0]), output_path=None, error=result[1])
+        if len(result) == 1:
+            return ConversionResult(success=bool(result[0]), output_path=None, error=None)
+    if isinstance(result, bool):
+        return ConversionResult(success=result, output_path=None, error=None)
+    return ConversionResult(success=False, output_path=None, error="unknown converter result")
 
 
 __all__ = [
@@ -51,6 +90,7 @@ __all__ = [
     "validate_file",
     "sanitize_stdin_filename_hint",
     "read_stdin_bytes_limited",
+    "mistral_ocr_size_error",
     "pdf_exceeds_heavy_work_limit",
     "safe_output_stem",
     "generate_yaml_frontmatter",
@@ -58,6 +98,7 @@ __all__ = [
     "sanitize_for_terminal",
     "ui_print",
     "ConversionResult",
+    "to_conversion_result",
 ]
 
 # ============================================================================
@@ -1019,6 +1060,24 @@ def validate_file(file_path: Path, mode: Optional[str] = None) -> Tuple[bool, Op
         return False, (f"File too large ({size_mb:.1f} MB) for {mode or 'this'} mode (limit {int(max_mb)} MB).")
 
     return True, None
+
+
+def mistral_ocr_size_error(file_size_mb: float) -> Optional[str]:
+    """Return a user-facing message if *file_size_mb* exceeds the Mistral OCR cap.
+
+    Centralizes the size check used both by up-front validation (see
+    :func:`validate_file` with ``mode="mistral_ocr"``) and by the runtime
+    OCR path (see ``mistral_converter._validate_file_for_ocr``) so the rule
+    and its wording stay in one place.
+
+    Returns ``None`` when the file is within limits.
+    """
+    if file_size_mb > config.MISTRAL_OCR_MAX_FILE_SIZE_MB:
+        return (
+            f"File too large for Mistral OCR ({file_size_mb:.1f} MB). "
+            f"Maximum allowed: {config.MISTRAL_OCR_MAX_FILE_SIZE_MB} MB"
+        )
+    return None
 
 
 def pdf_exceeds_heavy_work_limit(file_path: Path) -> Tuple[bool, Optional[str]]:

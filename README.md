@@ -227,7 +227,7 @@ python3 main.py --mode batch_ocr --batch-action submit --no-interactive
 
 ### System Status and Diagnostics
 
-System Status (mode 7 / `--test`) now reports optional feature readiness alongside configuration and cache stats:
+System Status is available as interactive menu option 7, or from the CLI via `python3 main.py --mode status` (alias: `--test`). It reports optional feature readiness alongside configuration and cache stats:
 
 ```
 Optional Features:
