@@ -463,15 +463,14 @@ def mode_pdf_to_images(file_paths: List[Path]) -> Tuple[bool, str]:
 # Re-export private helpers so legacy callers (e.g. tests referencing
 # ``main._qna_print_complete``) keep working without importing the modes
 # package directly. F401 suppression is intentional.
+from modes.batch import _JOB_ID_RE  # noqa: E402,F401
 from modes.batch import _batch_download  # noqa: E402,F401
 from modes.batch import _batch_list  # noqa: E402,F401
 from modes.batch import _batch_status  # noqa: E402,F401
 from modes.batch import _batch_submit  # noqa: E402,F401
-from modes.batch import _JOB_ID_RE  # noqa: E402,F401
 from modes.batch import _validate_job_id  # noqa: E402,F401
 from modes.qna import _qna_print_complete  # noqa: E402,F401
 from modes.qna import _qna_print_stream  # noqa: E402,F401
-
 
 # ============================================================================
 # Modes 7-8 (System Status, Maintenance) implemented in modes/system.py

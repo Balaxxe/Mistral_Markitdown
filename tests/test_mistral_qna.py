@@ -1,5 +1,6 @@
 """Tests for Mistral Document QnA helpers (query_document, stream,
 query_document_file). Split out of test_mistral_converter.py for navigability."""
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -328,5 +329,3 @@ class TestQueryDocumentFileFull:
 # ============================================================================
 # create_batch_ocr_file - full coverage
 # ============================================================================
-
-

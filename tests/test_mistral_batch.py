@@ -1,5 +1,6 @@
 """Tests for Mistral Batch OCR operations (submit/status/download/list).
 Split out of test_mistral_converter.py for navigability."""
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -564,5 +565,3 @@ class TestListBatchJobsError:
         assert ok is False
         assert jobs is None
         assert "Error listing batch jobs" in err
-
-

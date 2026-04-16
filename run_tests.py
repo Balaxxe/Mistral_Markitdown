@@ -73,8 +73,7 @@ def _ensure_venv(base: Path) -> None:
         if VENV_DIR.is_dir():
             shutil.rmtree(VENV_DIR, ignore_errors=True)
         print(
-            "INFO: venv with ensurepip failed; retrying with --without-pip "
-            "(will bootstrap pip via get-pip.py).",
+            "INFO: venv with ensurepip failed; retrying with --without-pip " "(will bootstrap pip via get-pip.py).",
             file=sys.stderr,
         )
         subprocess.check_call([str(base), "-m", "venv", "--without-pip", str(VENV_DIR)])
@@ -110,7 +109,13 @@ def _bootstrap_pip_in_venv() -> None:
         path = Path(f.name)
     try:
         try:
-            urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", path)
+            # Canonical, hard-coded HTTPS URL for the official pip bootstrap
+            # script; no user input is ever interpolated here. Bandit's B310
+            # warns about url open with unexpected schemes, which does not
+            # apply in this constrained context.
+            urllib.request.urlretrieve(  # nosec B310 - fixed pip bootstrap URL
+                "https://bootstrap.pypa.io/get-pip.py", path
+            )
         except urllib.error.URLError as e:
             print(f"ERROR: could not download get-pip.py: {e}", file=sys.stderr)
             raise SystemExit(1) from e

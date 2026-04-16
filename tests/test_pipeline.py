@@ -22,17 +22,17 @@ import config
 
 config.ensure_directories()
 
+from contextlib import contextmanager
+
 import local_converter
 import main
 import mistral_converter
-import utils
 
 # QnA and Batch OCR modes live in dedicated modules under ``modes/``. Tests
 # that mock converter dependencies need to target these namespaces directly.
 import modes.batch as _modes_batch
 import modes.qna as _modes_qna
-
-from contextlib import contextmanager
+import utils
 
 
 @contextmanager
@@ -48,10 +48,13 @@ def _patch_mistral_converter_everywhere():
     to patch all three places at once.
     """
     mock = MagicMock()
-    with patch.object(main, "mistral_converter", mock), patch.object(
-        _modes_qna, "mistral_converter", mock
-    ), patch.object(_modes_batch, "mistral_converter", mock):
+    with (
+        patch.object(main, "mistral_converter", mock),
+        patch.object(_modes_qna, "mistral_converter", mock),
+        patch.object(_modes_batch, "mistral_converter", mock),
+    ):
         yield mock
+
 
 # ============================================================================
 # mode_convert_smart Tests

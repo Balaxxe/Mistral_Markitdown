@@ -3,6 +3,7 @@
 Covers _validate_document_url, _is_forbidden_address, DNS resolution,
 and the signed-URL expiry classifier used by the QnA retry path.
 Split out of test_mistral_converter.py for navigability."""
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -352,37 +353,20 @@ class TestIsSignedUrlExpiryError:
     def test_random_url_mention_is_not_expiry(self):
         # The previous heuristic incorrectly retried on any message containing
         # "url"; the new classifier must not trigger on these.
-        assert (
-            mistral_converter.is_signed_url_expiry_error("Failed to resolve document URL for QnA")
-            is False
-        )
-        assert (
-            mistral_converter.is_signed_url_expiry_error("QnA stream failed: network reset")
-            is False
-        )
+        assert mistral_converter.is_signed_url_expiry_error("Failed to resolve document URL for QnA") is False
+        assert mistral_converter.is_signed_url_expiry_error("QnA stream failed: network reset") is False
 
     def test_permanent_auth_not_retried(self):
         assert (
-            mistral_converter.is_signed_url_expiry_error(
-                "Mistral API authentication failed (401 Unauthorized)."
-            )
+            mistral_converter.is_signed_url_expiry_error("Mistral API authentication failed (401 Unauthorized).")
             is False
         )
-        assert (
-            mistral_converter.is_signed_url_expiry_error("Invalid API key for workspace")
-            is False
-        )
+        assert mistral_converter.is_signed_url_expiry_error("Invalid API key for workspace") is False
 
     def test_signed_url_expiry_detected(self):
-        assert (
-            mistral_converter.is_signed_url_expiry_error("The signed URL has expired")
-            is True
-        )
+        assert mistral_converter.is_signed_url_expiry_error("The signed URL has expired") is True
         assert mistral_converter.is_signed_url_expiry_error("403 Forbidden") is True
-        assert (
-            mistral_converter.is_signed_url_expiry_error("Failed to fetch document from URL")
-            is True
-        )
+        assert mistral_converter.is_signed_url_expiry_error("Failed to fetch document from URL") is True
         assert mistral_converter.is_signed_url_expiry_error("Signature mismatch") is True
 
     def test_auth_hint_overrides_expiry_hint(self):
@@ -393,5 +377,3 @@ class TestIsSignedUrlExpiryError:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-

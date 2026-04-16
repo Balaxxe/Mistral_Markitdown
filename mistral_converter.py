@@ -2247,10 +2247,15 @@ def _validate_document_url(url: str) -> Tuple[bool, Optional[str]]:
     if not hostname:
         return False, "URL must include a hostname"
 
+    # These are SSRF blocklist entries, not bind addresses. Bandit's B104 flags
+    # "0.0.0.0" on sight because it is commonly mis-used to bind a server to all
+    # interfaces; here the string is just one of several internal hostnames /
+    # IPs we want to REJECT in document URLs. The nosec scope is intentionally
+    # narrow.
     blocked_hosts = {
         "localhost",
         "127.0.0.1",
-        "0.0.0.0",
+        "0.0.0.0",  # nosec B104 - blocklist entry, not a bind address
         "::1",
         "[::1]",
         "metadata.google.internal",

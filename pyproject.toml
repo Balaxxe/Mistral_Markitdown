@@ -63,7 +63,7 @@ Changelog = "https://github.com/jaim12005/Mistral_Markitdown/blob/main/CHANGELOG
 
 [tool.setuptools]
 py-modules = ["main", "config", "schemas", "mistral_converter", "local_converter", "utils", "run_tests"]
-packages = []
+packages = ["modes"]
 
 [tool.black]
 line-length = 120
