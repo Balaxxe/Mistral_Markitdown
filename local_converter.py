@@ -124,11 +124,6 @@ def get_markitdown_instance() -> Optional[MarkItDown]:
     ):
         with _markitdown_lock:
             current_generation = _markitdown_generation
-            if (
-                hasattr(_markitdown_instances, "instance")
-                and getattr(_markitdown_instances, "generation", None) == current_generation
-            ):
-                return _markitdown_instances.instance
 
             if MarkItDown is None:
                 logger.error("MarkItDown not installed. Install with: pip install markitdown")
