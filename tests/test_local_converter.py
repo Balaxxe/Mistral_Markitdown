@@ -277,6 +277,26 @@ class TestMarkItDownSingleton:
         second = local_converter.get_markitdown_instance()
         assert first is second
 
+    def test_thread_local_isolation(self):
+        local_converter.reset_markitdown_instance()
+        import threading
+
+        instances = []
+
+        def worker():
+            inst = local_converter.get_markitdown_instance()
+            instances.append(inst)
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        if instances[0] is not None and instances[1] is not None:
+            assert instances[0] is not instances[1]
+
 
 # ============================================================================
 # convert_with_markitdown Tests (mocked)
@@ -582,6 +602,7 @@ class TestConvertPdfToImages:
         assert "not installed" in error.lower() or "not available" in error.lower()
 
     def test_successful_conversion(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "test_pages"
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
         monkeypatch.setattr(config, "PDF_IMAGE_DPI", 200)
         monkeypatch.setattr(config, "PDF_IMAGE_FORMAT", "png")
@@ -592,15 +613,27 @@ class TestConvertPdfToImages:
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
 
-        # Create mock PIL Image objects
-        mock_img1 = MagicMock()
-        mock_img2 = MagicMock()
+        from pathlib import Path
 
-        with patch.object(local_converter, "convert_from_path", return_value=[mock_img1, mock_img2]):
-            success, paths, error = local_converter.convert_pdf_to_images(pdf_file)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        temp_file1 = str(output_dir / "page-1.png")
+        temp_file2 = str(output_dir / "page-2.png")
+        Path(temp_file1).touch()
+        Path(temp_file2).touch()
+
+        with patch.object(local_converter, "convert_from_path", return_value=[temp_file1, temp_file2]) as mock_convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
 
         assert success is True
         assert len(paths) == 2
+        assert paths[0] == output_dir / "page_001.png"
+        assert paths[1] == output_dir / "page_002.png"
+        assert (output_dir / "page_001.png").exists()
+        assert (output_dir / "page_002.png").exists()
+
+        mock_convert.assert_called_once()
+        kwargs = mock_convert.call_args[1]
+        assert kwargs["paths_only"] is True
 
     def test_handles_conversion_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
@@ -1113,6 +1146,7 @@ class TestConvertPdfToImagesPng:
     """Line 688: PNG format save branch."""
 
     def test_png_format(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "png_pages"
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
         monkeypatch.setattr(config, "PDF_IMAGE_DPI", 200)
         monkeypatch.setattr(config, "PDF_IMAGE_FORMAT", "png")
@@ -1123,19 +1157,25 @@ class TestConvertPdfToImagesPng:
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
 
-        mock_img = MagicMock()
+        from pathlib import Path
 
-        with patch.object(local_converter, "convert_from_path", return_value=[mock_img]):
-            success, paths, error = local_converter.convert_pdf_to_images(pdf_file)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = str(output_dir / "page-1.png")
+        Path(temp_file).touch()
+
+        with patch.object(local_converter, "convert_from_path", return_value=[temp_file]) as mock_convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
 
         assert success is True
-        # Verify PNG save was called
-        mock_img.save.assert_called_once()
-        call_args = mock_img.save.call_args
-        assert "PNG" in call_args[0]
+        assert paths[0] == output_dir / "page_001.png"
+        mock_convert.assert_called_once()
+        kwargs = mock_convert.call_args[1]
+        assert kwargs["paths_only"] is True
+        assert kwargs["fmt"] == "png"
 
     def test_jpeg_format(self, tmp_path, monkeypatch):
         """Verify JPEG format branch for completeness."""
+        output_dir = tmp_path / "jpeg_pages"
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
         monkeypatch.setattr(config, "PDF_IMAGE_DPI", 200)
         monkeypatch.setattr(config, "PDF_IMAGE_FORMAT", "jpeg")
@@ -1146,14 +1186,21 @@ class TestConvertPdfToImagesPng:
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
 
-        mock_img = MagicMock()
+        from pathlib import Path
 
-        with patch.object(local_converter, "convert_from_path", return_value=[mock_img]):
-            success, paths, error = local_converter.convert_pdf_to_images(pdf_file)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = str(output_dir / "page-1.jpg")
+        Path(temp_file).touch()
+
+        with patch.object(local_converter, "convert_from_path", return_value=[temp_file]) as mock_convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
 
         assert success is True
-        call_args = mock_img.save.call_args
-        assert "JPEG" in call_args[0]
+        assert paths[0] == output_dir / "page_001.jpg"
+        mock_convert.assert_called_once()
+        kwargs = mock_convert.call_args[1]
+        assert kwargs["paths_only"] is True
+        assert kwargs["fmt"] == "jpeg"
 
 
 # ============================================================================
@@ -1357,6 +1404,7 @@ class TestConvertPdfToImagesOtherFormat:
 
     def test_tiff_format(self, tmp_path, monkeypatch):
         """Other format branch uses PDF_IMAGE_FORMAT.upper()."""
+        output_dir = tmp_path / "tiff_pages"
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
         monkeypatch.setattr(config, "PDF_IMAGE_DPI", 200)
         monkeypatch.setattr(config, "PDF_IMAGE_FORMAT", "tiff")
@@ -1367,14 +1415,21 @@ class TestConvertPdfToImagesOtherFormat:
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
 
-        mock_img = MagicMock()
+        from pathlib import Path
 
-        with patch.object(local_converter, "convert_from_path", return_value=[mock_img]):
-            success, paths, error = local_converter.convert_pdf_to_images(pdf_file)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = str(output_dir / "page-1.tiff")
+        Path(temp_file).touch()
+
+        with patch.object(local_converter, "convert_from_path", return_value=[temp_file]) as mock_convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
 
         assert success is True
-        call_args = mock_img.save.call_args
-        assert "TIFF" in call_args[0]
+        assert paths[0] == output_dir / "page_001.tiff"
+        mock_convert.assert_called_once()
+        kwargs = mock_convert.call_args[1]
+        assert kwargs["paths_only"] is True
+        assert kwargs["fmt"] == "tiff"
 
 
 if __name__ == "__main__":

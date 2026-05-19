@@ -953,11 +953,117 @@ def _cleanup_temp_files(temp_files: List[Path]) -> None:
             logger.warning("Could not delete temporary file %s: %s", temp_file.name, e)
 
 
-def _ocr_shared_optional_params() -> Dict[str, Any]:
+def classify_document_type(file_path: Path) -> str:
+    """Classify document type into generic, invoice, financial_statement, contract, or form.
+
+    Uses a hybrid approach:
+    1. Regex checks on filename/path.
+    2. Parsing first-page text (if PDF or text file) for key identifiers.
+    3. Cheap LLM classification fallback (using ministral-8b-latest or mistral-small-latest).
+    """
+    name = file_path.name.lower()
+
+    # 1. Filename heuristic
+    if any(w in name for w in ["invoice", "receipt", "bill"]):
+        logger.debug("Classified %s as 'invoice' via filename", file_path.name)
+        return "invoice"
+    if any(w in name for w in ["contract", "agreement", "nda", "lease"]):
+        logger.debug("Classified %s as 'contract' via filename", file_path.name)
+        return "contract"
+    if any(w in name for w in ["statement", "financial", "balance_sheet", "income"]):
+        logger.debug("Classified %s as 'financial_statement' via filename", file_path.name)
+        return "financial_statement"
+    if any(w in name for w in ["form", "w9", "w2", "tax"]):
+        logger.debug("Classified %s as 'form' via filename", file_path.name)
+        return "form"
+
+    # 2. First-page text content check (for text PDFs/txt files)
+    ext = file_path.suffix.lower().lstrip(".")
+    first_text = ""
+
+    if ext == "pdf":
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(file_path) as pdf:
+                if pdf.pages:
+                    first_text = (pdf.pages[0].extract_text() or "")[:1000]
+        except Exception as e:
+            logger.debug("Could not extract PDF text for classification: %s", e)
+    elif ext == "txt":
+        try:
+            first_text = file_path.read_text(errors="ignore")[:1000]
+        except Exception as e:
+            logger.debug("Could not read text file for classification: %s", e)
+
+    if first_text:
+        first_text_lower = first_text.lower()
+        if any(w in first_text_lower for w in ["invoice", "receipt", "purchase order", "amount due"]):
+            logger.debug("Classified %s as 'invoice' via page 1 text", file_path.name)
+            return "invoice"
+        if any(w in first_text_lower for w in ["agreement", "contract", "parties", "hereby", "undersigned"]):
+            logger.debug("Classified %s as 'contract' via page 1 text", file_path.name)
+            return "contract"
+        if any(
+            w in first_text_lower
+            for w in ["statement of", "balance sheet", "cash flow", "income statement", "assets", "liabilities"]
+        ):
+            logger.debug("Classified %s as 'financial_statement' via page 1 text", file_path.name)
+            return "financial_statement"
+        if any(w in first_text_lower for w in ["form ", "w-9", "w-2", "tax return", "filer"]):
+            logger.debug("Classified %s as 'form' via page 1 text", file_path.name)
+            return "form"
+
+    # 3. LLM fallback check (if API key is present)
+    if config.MISTRAL_API_KEY:
+        try:
+            client = get_mistral_client()
+            if client:
+                prompt = (
+                    f"Classify the document '{file_path.name}' into one of these types: "
+                    "invoice, financial_statement, contract, form, generic.\n"
+                    "Reply with only the lowercase name of the type.\n"
+                )
+                if first_text:
+                    prompt += f"First page excerpt:\n{first_text[:500]}\n"
+
+                model = config.MISTRAL_DOCUMENT_QNA_MODEL or "ministral-8b-latest"
+                response = client.chat.complete(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=10,
+                )
+                if response and response.choices:
+                    result = response.choices[0].message.content.strip().lower()
+                    for t in ["invoice", "financial_statement", "contract", "form"]:
+                        if t in result:
+                            logger.debug("Classified %s as '%s' via LLM", file_path.name, t)
+                            return t
+        except Exception as e:
+            logger.debug("LLM classification check failed: %s", e)
+
+    logger.debug("Classified %s as 'generic'", file_path.name)
+    return "generic"
+
+
+def _ocr_shared_optional_params(file_path: Optional[Path] = None, doc_type: str = "auto") -> Dict[str, Any]:
     """OCR fields shared by sync ``ocr.process`` and batch JSONL ``body``."""
     fields: Dict[str, Any] = {}
     bbox_format = get_bbox_annotation_format()
-    doc_format = get_document_annotation_format()
+
+    # Resolve dynamic classification if doc_type is "auto"
+    resolved_doc_type = doc_type
+    if resolved_doc_type == "auto":
+        nested = config.MISTRAL_DOCUMENT_SCHEMA_TYPE
+        if nested == "auto":
+            if file_path is not None:
+                resolved_doc_type = classify_document_type(file_path)
+            else:
+                resolved_doc_type = "generic"
+        else:
+            resolved_doc_type = nested
+
+    doc_format = get_document_annotation_format(doc_type=resolved_doc_type)
     if bbox_format is not None:
         fields["bbox_annotation_format"] = bbox_format
     if doc_format is not None:
@@ -982,6 +1088,8 @@ def build_ocr_process_kwargs(
     include_retries: bool,
     pages: Optional[List[int]] = None,
     request_id: Optional[str] = None,
+    file_path: Optional[Path] = None,
+    doc_type: str = "auto",
 ) -> Dict[str, Any]:
     """Build kwargs for ``client.ocr.process`` or a batch JSONL line ``body``."""
     ocr_params: Dict[str, Any] = {
@@ -995,7 +1103,7 @@ def build_ocr_process_kwargs(
         ocr_params["id"] = request_id
     if pages is not None:
         ocr_params["pages"] = pages
-    ocr_params.update(_ocr_shared_optional_params())
+    ocr_params.update(_ocr_shared_optional_params(file_path=file_path, doc_type=doc_type))
     return ocr_params
 
 
@@ -1130,6 +1238,7 @@ def process_with_ocr(
             include_retries=True,
             pages=pages,
             request_id=ocr_id,
+            file_path=file_path,
         )
 
         response = client.ocr.process(**ocr_params)
@@ -2521,6 +2630,7 @@ def _prepare_batch_entries(
             include_retries=False,
             pages=None,
             request_id=custom_id,
+            file_path=file_path,
         )
         body["include_image_base64"] = include_image_base64
 
