@@ -1056,19 +1056,21 @@ def _ocr_shared_optional_params(file_path: Optional[Path] = None, doc_type: str 
     fields: Dict[str, Any] = {}
     bbox_format = get_bbox_annotation_format()
 
-    # Resolve dynamic classification if doc_type is "auto"
-    resolved_doc_type = doc_type
-    if resolved_doc_type == "auto":
-        nested = config.MISTRAL_DOCUMENT_SCHEMA_TYPE
-        if nested == "auto":
-            if file_path is not None:
-                resolved_doc_type = classify_document_type(file_path)
+    doc_format = None
+    if config.MISTRAL_ENABLE_STRUCTURED_OUTPUT and config.MISTRAL_ENABLE_DOCUMENT_ANNOTATION:
+        # Resolve dynamic classification only when document annotation can use it.
+        resolved_doc_type = doc_type
+        if resolved_doc_type == "auto":
+            nested = config.MISTRAL_DOCUMENT_SCHEMA_TYPE
+            if nested == "auto":
+                if file_path is not None:
+                    resolved_doc_type = classify_document_type(file_path)
+                else:
+                    resolved_doc_type = "generic"
             else:
-                resolved_doc_type = "generic"
-        else:
-            resolved_doc_type = nested
+                resolved_doc_type = nested
 
-    doc_format = get_document_annotation_format(doc_type=resolved_doc_type)
+        doc_format = get_document_annotation_format(doc_type=resolved_doc_type)
     if bbox_format is not None:
         fields["bbox_annotation_format"] = bbox_format
     if doc_format is not None:

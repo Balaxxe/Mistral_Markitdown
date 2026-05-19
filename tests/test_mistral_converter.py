@@ -4335,6 +4335,7 @@ class TestDocumentClassificationRouting:
     def test_shared_optional_params_routing(self, monkeypatch):
         # When MISTRAL_DOCUMENT_SCHEMA_TYPE is "auto", classification is triggered
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_SCHEMA_TYPE", "auto")
+        monkeypatch.setattr(config, "MISTRAL_ENABLE_STRUCTURED_OUTPUT", True)
         monkeypatch.setattr(config, "MISTRAL_ENABLE_DOCUMENT_ANNOTATION", True)
 
         # Mock classify_document_type to return "invoice"
@@ -4343,3 +4344,14 @@ class TestDocumentClassificationRouting:
                 mistral_converter._ocr_shared_optional_params(file_path=Path("my_file.pdf"))
                 mock_classify.assert_called_once_with(Path("my_file.pdf"))
                 mock_fmt.assert_called_once_with(doc_type="invoice")
+
+    def test_shared_optional_params_skips_classification_when_document_annotation_disabled(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_SCHEMA_TYPE", "auto")
+        monkeypatch.setattr(config, "MISTRAL_ENABLE_STRUCTURED_OUTPUT", True)
+        monkeypatch.setattr(config, "MISTRAL_ENABLE_DOCUMENT_ANNOTATION", False)
+
+        with patch.object(mistral_converter, "classify_document_type", return_value="invoice") as mock_classify:
+            with patch.object(mistral_converter, "get_document_annotation_format") as mock_fmt:
+                mistral_converter._ocr_shared_optional_params(file_path=Path("my_file.pdf"))
+                mock_classify.assert_not_called()
+                mock_fmt.assert_not_called()
