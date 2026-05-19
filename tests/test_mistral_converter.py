@@ -4288,3 +4288,70 @@ class TestDetectWeakPages:
         assert 0 in weak  # "short" is weak
         assert 2 in weak  # empty is weak
         assert 3 not in weak  # long diverse text is not weak
+
+
+# ============================================================================
+# document classification routing tests
+# ============================================================================
+
+
+class TestDocumentClassificationRouting:
+    """Test classify_document_type and dynamic classification schema routing."""
+
+    def test_classify_by_filename(self, tmp_path):
+        f1 = tmp_path / "invoice_123.pdf"
+        assert mistral_converter.classify_document_type(f1) == "invoice"
+
+        f2 = tmp_path / "lease_agreement.docx"
+        assert mistral_converter.classify_document_type(f2) == "contract"
+
+        f3 = tmp_path / "balance_sheet_2025.xlsx"
+        assert mistral_converter.classify_document_type(f3) == "financial_statement"
+
+        f4 = tmp_path / "w9_form.pdf"
+        assert mistral_converter.classify_document_type(f4) == "form"
+
+        f5 = tmp_path / "notes.txt"
+        assert mistral_converter.classify_document_type(f5) == "generic"
+
+    def test_classify_by_filename_uses_token_boundaries(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "")
+
+        assert mistral_converter.classify_document_type(tmp_path / "information.pdf") == "generic"
+        assert mistral_converter.classify_document_type(tmp_path / "monday_notes.pdf") == "generic"
+        assert mistral_converter.classify_document_type(tmp_path / "taxonomy.pdf") == "generic"
+        assert mistral_converter.classify_document_type(tmp_path / "billboard.pdf") == "generic"
+
+    def test_classify_by_text_content(self, tmp_path):
+        # Text file classification
+        f = tmp_path / "doc.txt"
+        f.write_text("This agreement is entered into by the parties undersigned...")
+        assert mistral_converter.classify_document_type(f) == "contract"
+
+        f2 = tmp_path / "doc2.txt"
+        f2.write_text("Total Amount Due: $1,200.50 Invoice Number: INV-091")
+        assert mistral_converter.classify_document_type(f2) == "invoice"
+
+    def test_shared_optional_params_routing(self, monkeypatch):
+        # When MISTRAL_DOCUMENT_SCHEMA_TYPE is "auto", classification is triggered
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_SCHEMA_TYPE", "auto")
+        monkeypatch.setattr(config, "MISTRAL_ENABLE_STRUCTURED_OUTPUT", True)
+        monkeypatch.setattr(config, "MISTRAL_ENABLE_DOCUMENT_ANNOTATION", True)
+
+        # Mock classify_document_type to return "invoice"
+        with patch.object(mistral_converter, "classify_document_type", return_value="invoice") as mock_classify:
+            with patch.object(mistral_converter, "get_document_annotation_format") as mock_fmt:
+                mistral_converter._ocr_shared_optional_params(file_path=Path("my_file.pdf"))
+                mock_classify.assert_called_once_with(Path("my_file.pdf"))
+                mock_fmt.assert_called_once_with(doc_type="invoice")
+
+    def test_shared_optional_params_skips_classification_when_document_annotation_disabled(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_SCHEMA_TYPE", "auto")
+        monkeypatch.setattr(config, "MISTRAL_ENABLE_STRUCTURED_OUTPUT", True)
+        monkeypatch.setattr(config, "MISTRAL_ENABLE_DOCUMENT_ANNOTATION", False)
+
+        with patch.object(mistral_converter, "classify_document_type", return_value="invoice") as mock_classify:
+            with patch.object(mistral_converter, "get_document_annotation_format") as mock_fmt:
+                mistral_converter._ocr_shared_optional_params(file_path=Path("my_file.pdf"))
+                mock_classify.assert_not_called()
+                mock_fmt.assert_not_called()

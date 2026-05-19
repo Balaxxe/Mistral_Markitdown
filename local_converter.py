@@ -69,8 +69,9 @@ logger = utils.logger
 
 _MARKITDOWN_UNSET = object()  # sentinel: init never attempted
 _markitdown_instance = _MARKITDOWN_UNSET
+_markitdown_instances = threading.local()
+_markitdown_generation = 0
 _markitdown_lock = threading.Lock()
-_markitdown_convert_lock = threading.Lock()
 
 
 def _build_markitdown_kwargs() -> Dict[str, Any]:
@@ -110,42 +111,50 @@ def _build_markitdown_kwargs() -> Dict[str, Any]:
 
 def get_markitdown_instance() -> Optional[MarkItDown]:
     """
-    Create and configure a MarkItDown instance (thread-safe).
+    Create and configure a MarkItDown instance (thread-safe, thread-local).
 
-    Uses a module-level cache protected by a lock so concurrent threads
-    in batch processing don't race on initialization.  A failed init is
-    remembered (instance set to ``None``) so subsequent calls return
-    immediately without retrying or logging duplicate errors.
+    Uses a thread-local cache so concurrent threads in batch processing
+    don't serialize on conversion tasks.
     """
     global _markitdown_instance
 
-    cached = _markitdown_instance
-    if cached is not _MARKITDOWN_UNSET:
-        return cached  # either a live instance or None (failed init)
+    if (
+        not hasattr(_markitdown_instances, "instance")
+        or getattr(_markitdown_instances, "generation", None) != _markitdown_generation
+    ):
+        with _markitdown_lock:
+            current_generation = _markitdown_generation
 
-    with _markitdown_lock:
-        if _markitdown_instance is not _MARKITDOWN_UNSET:
-            return _markitdown_instance  # pragma: no cover
+            if MarkItDown is None:
+                logger.error("MarkItDown not installed. Install with: pip install markitdown")
+                _markitdown_instances.instance = None
+                _markitdown_instances.generation = current_generation
+                _markitdown_instance = None
+                return None
 
-        if MarkItDown is None:
-            logger.error("MarkItDown not installed. Install with: pip install markitdown")
-            _markitdown_instance = None
-            return None
+            try:
+                instance = MarkItDown(**_build_markitdown_kwargs())
+                _markitdown_instances.instance = instance
+                _markitdown_instances.generation = current_generation
+                _markitdown_instance = instance
+            except Exception as e:
+                logger.error("Error initializing MarkItDown: %s", e)
+                _markitdown_instances.instance = None
+                _markitdown_instances.generation = current_generation
+                _markitdown_instance = None
 
-        try:
-            _markitdown_instance = MarkItDown(**_build_markitdown_kwargs())
-            return _markitdown_instance
-
-        except Exception as e:
-            logger.error("Error initializing MarkItDown: %s", e)
-            _markitdown_instance = None  # remember the failure
-            return None
+    return _markitdown_instances.instance
 
 
-def reset_markitdown_instance():
+def reset_markitdown_instance() -> None:
     """Reset the cached MarkItDown instance so the next call retries initialization."""
-    global _markitdown_instance
+    global _markitdown_generation, _markitdown_instance
     with _markitdown_lock:
+        if hasattr(_markitdown_instances, "instance"):
+            delattr(_markitdown_instances, "instance")
+        if hasattr(_markitdown_instances, "generation"):
+            delattr(_markitdown_instances, "generation")
+        _markitdown_generation += 1
         _markitdown_instance = _MARKITDOWN_UNSET
 
 
@@ -177,10 +186,8 @@ def convert_with_markitdown(
     try:
         logger.info("Converting with MarkItDown: %s", file_path.name)
 
-        # Serialize convert() — MarkItDown is not documented as thread-safe for
-        # concurrent converts while we share one cached instance across workers.
-        with _markitdown_convert_lock:
-            result = md.convert(str(file_path))
+        # Convert concurrently using thread-local MarkItDown instance
+        result = md.convert(str(file_path))
 
         if result and hasattr(result, "markdown"):
             markdown_content = result.markdown
@@ -273,17 +280,16 @@ def convert_stream_with_markitdown(
 
     try:
         logger.info("Converting stream with MarkItDown: %s", filename)
-        with _markitdown_convert_lock:
-            stream_info = None
-            if StreamInfo is not None:
-                stream_info = StreamInfo(
-                    extension=Path(filename).suffix,
-                    filename=filename,
-                )
-            if stream_info is not None:
-                result = md.convert_stream(stream, stream_info=stream_info)
-            else:
-                result = md.convert_stream(stream, file_extension=Path(filename).suffix)
+        stream_info = None
+        if StreamInfo is not None:
+            stream_info = StreamInfo(
+                extension=Path(filename).suffix,
+                filename=filename,
+            )
+        if stream_info is not None:
+            result = md.convert_stream(stream, stream_info=stream_info)
+        else:
+            result = md.convert_stream(stream, file_extension=Path(filename).suffix)
 
         if result and hasattr(result, "markdown"):
             return True, result.markdown, None
@@ -770,7 +776,7 @@ def convert_pdf_to_images(
         # Configure poppler path for Windows
         poppler_path = (config.POPPLER_PATH or None) if sys.platform == "win32" else None
 
-        # Build conversion parameters
+        # Build conversion parameters (using paths_only to avoid RAM spikes on large PDFs)
         convert_params = {
             "pdf_path": str(pdf_path),
             "dpi": dpi,
@@ -779,28 +785,24 @@ def convert_pdf_to_images(
             "poppler_path": poppler_path,
             "thread_count": max(1, thread_count),
             "use_pdftocairo": config.PDF_IMAGE_USE_PDFTOCAIRO,
+            "output_file": "page",
+            "paths_only": True,
         }
 
-        # Convert PDF to images
-        images = convert_from_path(**convert_params)
+        # Convert PDF to images directly on disk
+        temp_paths = convert_from_path(**convert_params)
 
-        # Save images
+        # Rename output files to preserve expected page_001.ext structure
         image_paths = []
         file_extension = "jpg" if config.PDF_IMAGE_FORMAT == "jpeg" else config.PDF_IMAGE_FORMAT
 
-        for i, image in enumerate(images, 1):
-            image_path = output_dir / f"page_{i:03d}.{file_extension}"
-
-            # Save with format-specific options
-            if config.PDF_IMAGE_FORMAT == "jpeg":
-                image.save(str(image_path), "JPEG", quality=85, optimize=True, progressive=True)
-            elif config.PDF_IMAGE_FORMAT == "png":
-                image.save(str(image_path), "PNG", optimize=True)
-            else:
-                image.save(str(image_path), config.PDF_IMAGE_FORMAT.upper())
-
-            image_paths.append(image_path)
-            logger.debug("Saved page %d to %s", i, image_path.name)
+        for i, temp_path_str in enumerate(temp_paths, 1):
+            temp_path = Path(temp_path_str)
+            target_path = output_dir / f"page_{i:03d}.{file_extension}"
+            if temp_path.exists() and temp_path != target_path:
+                temp_path.replace(target_path)
+            image_paths.append(target_path)
+            logger.debug("Saved page %d to %s", i, target_path.name)
 
         logger.info(
             "Converted %d pages to %s images",
