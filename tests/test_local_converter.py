@@ -19,7 +19,9 @@ Tests cover:
 """
 
 import io
+import queue
 import sys
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -279,7 +281,6 @@ class TestMarkItDownSingleton:
 
     def test_thread_local_isolation(self):
         local_converter.reset_markitdown_instance()
-        import threading
 
         instances = []
 
@@ -296,6 +297,46 @@ class TestMarkItDownSingleton:
 
         if instances[0] is not None and instances[1] is not None:
             assert instances[0] is not instances[1]
+
+    def test_reset_invalidates_other_thread_cache(self):
+        local_converter.reset_markitdown_instance()
+
+        class FakeMarkItDown:
+            created = 0
+
+            def __init__(self, **kwargs):
+                type(self).created += 1
+                self.created = type(self).created
+
+        commands = queue.Queue()
+        responses = queue.Queue()
+
+        def worker():
+            while True:
+                command = commands.get(timeout=5)
+                if command == "stop":
+                    return
+                responses.put(local_converter.get_markitdown_instance())
+
+        with patch.object(local_converter, "MarkItDown", FakeMarkItDown):
+            worker_thread = threading.Thread(target=worker)
+            worker_thread.start()
+            try:
+                commands.put("get")
+                first = responses.get(timeout=5)
+
+                local_converter.reset_markitdown_instance()
+
+                commands.put("get")
+                second = responses.get(timeout=5)
+            finally:
+                commands.put("stop")
+                worker_thread.join(timeout=5)
+                local_converter.reset_markitdown_instance()
+
+        assert first is not second
+        assert first.created == 1
+        assert second.created == 2
 
 
 # ============================================================================
@@ -889,8 +930,6 @@ class TestGetMarkItDownInstanceBranches:
 
     def test_concurrent_lock_returns_cached(self):
         """Line 95: second call inside lock finds instance already set by first call."""
-        import threading
-
         local_converter.reset_markitdown_instance()
 
         results = [None, None]

@@ -953,6 +953,11 @@ def _cleanup_temp_files(temp_files: List[Path]) -> None:
             logger.warning("Could not delete temporary file %s: %s", temp_file.name, e)
 
 
+def _filename_has_keyword(name: str, keywords: List[str]) -> bool:
+    """Return True when a keyword appears as a filename token."""
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", name) for keyword in keywords)
+
+
 def classify_document_type(file_path: Path) -> str:
     """Classify document type into generic, invoice, financial_statement, contract, or form.
 
@@ -964,16 +969,16 @@ def classify_document_type(file_path: Path) -> str:
     name = file_path.name.lower()
 
     # 1. Filename heuristic
-    if any(w in name for w in ["invoice", "receipt", "bill"]):
+    if _filename_has_keyword(name, ["invoice", "receipt", "bill"]):
         logger.debug("Classified %s as 'invoice' via filename", file_path.name)
         return "invoice"
-    if any(w in name for w in ["contract", "agreement", "nda", "lease"]):
+    if _filename_has_keyword(name, ["contract", "agreement", "nda", "lease"]):
         logger.debug("Classified %s as 'contract' via filename", file_path.name)
         return "contract"
-    if any(w in name for w in ["statement", "financial", "balance_sheet", "income"]):
+    if _filename_has_keyword(name, ["statement", "financial", "balance_sheet", "income"]):
         logger.debug("Classified %s as 'financial_statement' via filename", file_path.name)
         return "financial_statement"
-    if any(w in name for w in ["form", "w9", "w2", "tax"]):
+    if _filename_has_keyword(name, ["form", "w9", "w2", "tax"]):
         logger.debug("Classified %s as 'form' via filename", file_path.name)
         return "form"
 

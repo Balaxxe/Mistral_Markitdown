@@ -70,6 +70,7 @@ logger = utils.logger
 _MARKITDOWN_UNSET = object()  # sentinel: init never attempted
 _markitdown_instance = _MARKITDOWN_UNSET
 _markitdown_instances = threading.local()
+_markitdown_generation = 0
 _markitdown_lock = threading.Lock()
 
 
@@ -117,32 +118,48 @@ def get_markitdown_instance() -> Optional[MarkItDown]:
     """
     global _markitdown_instance
 
-    if not hasattr(_markitdown_instances, "instance"):
+    if (
+        not hasattr(_markitdown_instances, "instance")
+        or getattr(_markitdown_instances, "generation", None) != _markitdown_generation
+    ):
         with _markitdown_lock:
+            current_generation = _markitdown_generation
+            if (
+                hasattr(_markitdown_instances, "instance")
+                and getattr(_markitdown_instances, "generation", None) == current_generation
+            ):
+                return _markitdown_instances.instance
+
             if MarkItDown is None:
                 logger.error("MarkItDown not installed. Install with: pip install markitdown")
                 _markitdown_instances.instance = None
+                _markitdown_instances.generation = current_generation
                 _markitdown_instance = None
                 return None
 
             try:
                 instance = MarkItDown(**_build_markitdown_kwargs())
                 _markitdown_instances.instance = instance
+                _markitdown_instances.generation = current_generation
                 _markitdown_instance = instance
             except Exception as e:
                 logger.error("Error initializing MarkItDown: %s", e)
                 _markitdown_instances.instance = None
+                _markitdown_instances.generation = current_generation
                 _markitdown_instance = None
 
     return _markitdown_instances.instance
 
 
-def reset_markitdown_instance():
+def reset_markitdown_instance() -> None:
     """Reset the cached MarkItDown instance so the next call retries initialization."""
-    global _markitdown_instance
+    global _markitdown_generation, _markitdown_instance
     with _markitdown_lock:
         if hasattr(_markitdown_instances, "instance"):
             delattr(_markitdown_instances, "instance")
+        if hasattr(_markitdown_instances, "generation"):
+            delattr(_markitdown_instances, "generation")
+        _markitdown_generation += 1
         _markitdown_instance = _MARKITDOWN_UNSET
 
 

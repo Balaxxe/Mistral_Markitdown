@@ -4314,6 +4314,14 @@ class TestDocumentClassificationRouting:
         f5 = tmp_path / "notes.txt"
         assert mistral_converter.classify_document_type(f5) == "generic"
 
+    def test_classify_by_filename_uses_token_boundaries(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "")
+
+        assert mistral_converter.classify_document_type(tmp_path / "information.pdf") == "generic"
+        assert mistral_converter.classify_document_type(tmp_path / "monday_notes.pdf") == "generic"
+        assert mistral_converter.classify_document_type(tmp_path / "taxonomy.pdf") == "generic"
+        assert mistral_converter.classify_document_type(tmp_path / "billboard.pdf") == "generic"
+
     def test_classify_by_text_content(self, tmp_path):
         # Text file classification
         f = tmp_path / "doc.txt"
