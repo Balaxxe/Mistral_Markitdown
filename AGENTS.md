@@ -84,3 +84,12 @@ The subagent gate hook (`.cursor/hooks/subagent-gate.sh`) restricts spawning to 
 
 - Before PR: `make check` (runs lint + typecheck + tests, mirroring CI)
 - Include summary, risk, and validation steps.
+
+## Cursor Cloud specific instructions
+
+- **No Docker, no database, no external services required.** This is a pure CLI tool.
+- The update script installs `poppler-utils` (system dep for `pdf2image`) and all Python deps. Dependencies are ready after VM startup.
+- `pyright` reports 2 pre-existing `reportArgumentType` errors in `local_converter.py:800`. These are upstream; do not try to fix them.
+- `make check` calls `scripts/test-safe.sh` which tries to activate a local `env/` virtualenv. In cloud VMs there is no `env/` dir, but the script falls back gracefully — tests still run. Alternatively use `python3 -m pytest tests/` directly.
+- To run the app without interactive prompts: `python3 main.py --mode markitdown --no-interactive` (converts files in `input/` using local MarkItDown).
+- All 730 tests mock Mistral API calls — no `MISTRAL_API_KEY` needed to run the test suite.
