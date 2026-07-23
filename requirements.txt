@@ -3,7 +3,7 @@
 # For development (pytest, linters): see requirements-dev.txt
 
 # Core: MarkItDown with all optional format dependencies
-markitdown[all]==0.1.5
+markitdown[all]==0.1.6
 
 # Core: Mistral AI SDK v2 for OCR, QnA, and Batch API
 mistralai==2.1.3
