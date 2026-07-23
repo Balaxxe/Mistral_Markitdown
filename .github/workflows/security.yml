@@ -22,6 +22,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # Runner/image setuptools can be older than PYSEC-2026-3447 fix (83.0.0).
+          python -m pip install --upgrade "setuptools>=83.0.0"
           pip install -r requirements.txt
           pip install pip-audit
 

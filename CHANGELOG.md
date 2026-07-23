@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bump `setuptools` to `>=83` / `~=83.0` (PYSEC-2026-3447) and upgrade it in the security workflow before `pip-audit`
 - Default `MISTRAL_DOCUMENT_URL_STRICT_DNS=true` (fail closed for user URLs); file QnA signed URLs relax DNS fail-closed
 - Default `TABLE_OUTPUT_FORMATS=markdown` (was empty / no sidecars)
 - `MAX_BATCH_FILES` enforced for MarkItDown and PDF-to-images modes
