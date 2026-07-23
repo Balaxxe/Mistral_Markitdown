@@ -213,6 +213,16 @@ class TestSafeParsingHelpers:
         result = config._safe_csv("TEST_CSV_VAR", "a,b,c")
         assert result == ["a", "b", "c"]
 
+    def test_parse_table_output_formats_unset_defaults_markdown(self):
+        assert config._parse_table_output_formats(None) == ["markdown"]
+
+    def test_parse_table_output_formats_blank_disables_sidecars(self):
+        assert config._parse_table_output_formats("") == []
+        assert config._parse_table_output_formats("   ") == []
+
+    def test_parse_table_output_formats_csv_list(self):
+        assert config._parse_table_output_formats("markdown,csv") == ["markdown", "csv"]
+
 
 class TestSafeIntBelowMinWarning:
     """Line 55: _safe_int value below min_val triggers warning."""
@@ -283,6 +293,13 @@ class TestValidateConfigurationBranches:
         monkeypatch.setattr(config, "LOG_LEVEL", "TRACE")
         issues = config.validate_configuration()
         assert any("LOG_LEVEL" in i and "invalid" in i for i in issues)
+
+    def test_invalid_cleanup_upload_scope_when_monkeypatched(self, monkeypatch):
+        """Defensive validate_configuration path for monkeypatched invalid scope."""
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "key")
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "everywhere")
+        issues = config.validate_configuration()
+        assert any("CLEANUP_UPLOAD_SCOPE" in i and "invalid" in i for i in issues)
 
     def test_invalid_schema_type(self, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "key")

@@ -1,5 +1,8 @@
 """
 Pytest configuration and shared fixtures.
+
+Shared fixtures live here when multiple test modules need the same sample
+artifacts. Prefer ``tmp_path`` + local setup for one-off cases.
 """
 
 import pytest
@@ -7,74 +10,23 @@ import pytest
 
 @pytest.fixture
 def sample_pdf_path(tmp_path):
-    """Create a sample PDF file for testing."""
+    """Minimal PDF bytes for file-operation tests (not a valid renderable PDF)."""
     pdf_path = tmp_path / "sample.pdf"
-    # Create a minimal PDF file (just for testing file operations)
     pdf_path.write_bytes(b"%PDF-1.4\n%EOF")
     return pdf_path
 
 
 @pytest.fixture
 def sample_text_file(tmp_path):
-    """Create a sample text file for testing."""
+    """Small text file for path/validation helpers."""
     text_path = tmp_path / "sample.txt"
     text_path.write_text("Sample text content\nLine 2\nLine 3")
     return text_path
 
 
 @pytest.fixture
-def mock_env_vars(monkeypatch):
-    """Set environment variables for testing.
-
-    NOTE: ``config.py`` reads env vars at import time, so these patches
-    do NOT affect already-evaluated config attributes.  Tests that need
-    to override config values should ``monkeypatch.setattr(config, ...)``
-    directly instead of relying on this fixture.
-    """
-    test_env = {
-        "MISTRAL_API_KEY": "test_api_key_12345",
-        "CACHE_DURATION_HOURS": "24",
-        "LOG_LEVEL": "INFO",
-        "MAX_CONCURRENT_FILES": "5",
-    }
-    for key, value in test_env.items():
-        monkeypatch.setenv(key, value)
-    return test_env
-
-
-@pytest.fixture
-def sample_markdown():
-    """Sample markdown content for testing."""
-    return """---
-title: "Test Document"
-date: 2025-01-01
----
-
-# Main Heading
-
-This is a **bold** statement and this is *italic*.
-
-## Table
-
-| Name | Age | City |
-|------|-----|------|
-| Alice | 30 | NYC |
-| Bob | 25 | LA |
-
-## Code Block
-
-```python
-def hello():
-    print("Hello, World!")
-```
-
-[Link to example](https://example.com)
-"""
-
-
-@pytest.fixture
 def sample_ocr_result():
-    """Sample OCR result for testing."""
+    """Representative OCR result dict for converter/quality tests."""
     return {
         "file_name": "test.pdf",
         "pages": [
@@ -89,7 +41,10 @@ def sample_ocr_result():
                 "images": [],
             },
         ],
-        "full_text": "Sample page 1 text with multiple words and numbers 123 456.\n\nSample page 2 text with more content and data 789 012.",
+        "full_text": (
+            "Sample page 1 text with multiple words and numbers 123 456.\n\n"
+            "Sample page 2 text with more content and data 789 012."
+        ),
         "images": [],
         "metadata": {},
     }

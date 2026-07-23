@@ -9,6 +9,7 @@ Tests cover:
 
 import pytest
 
+import config
 import schemas
 
 # ============================================================================
@@ -27,10 +28,16 @@ class TestGetDocumentSchema:
         result = schemas.get_document_schema(schema_type)
         assert isinstance(result, dict)
 
-    def test_unknown_type_falls_back(self):
-        """Unknown types should fall back to generic."""
+    def test_unknown_type_falls_back(self, monkeypatch):
+        """Unknown types should fall back to generic when strict mode is off."""
+        monkeypatch.setattr(config, "SCHEMA_STRICT_UNKNOWN_TYPES", False)
         result = schemas.get_document_schema("nonexistent_type")
         assert isinstance(result, dict)
+
+    def test_unknown_type_raises_when_strict(self, monkeypatch):
+        monkeypatch.setattr(config, "SCHEMA_STRICT_UNKNOWN_TYPES", True)
+        with pytest.raises(ValueError, match="Unknown document schema type"):
+            schemas.get_document_schema("nonexistent_type")
 
     @pytest.mark.parametrize(
         "schema_type",

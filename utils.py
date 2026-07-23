@@ -172,9 +172,10 @@ def ui_print(*args, **kwargs) -> None:
     A thin wrapper around :func:`print` that marks output as intentional CLI
     messaging (as opposed to debug/operational logging via :data:`logger`).
     Future callers can redirect or format this output without grepping for
-    bare ``print()`` calls.
+    bare ``print()`` calls. String arguments are sanitized for the terminal.
     """
-    print(*args, **kwargs)
+    sanitized = tuple(sanitize_for_terminal(a) if isinstance(a, str) else a for a in args)
+    print(*sanitized, **kwargs)
 
 
 def atomic_write_text(path: Path, content: str, encoding: str = "utf-8", newline: Optional[str] = None) -> None:
@@ -553,6 +554,12 @@ cache = IntelligentCache()
 # ============================================================================
 
 
+def _escape_markdown_table_cell(value: object) -> str:
+    """Escape pipes and collapse newlines so cell text cannot break Markdown tables."""
+    text = str(value).replace("|", "\\|")
+    return text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 def format_table_to_markdown(data: List[List[str]], headers: Optional[List[str]] = None) -> str:
     """
     Convert table data to Markdown format.
@@ -579,7 +586,7 @@ def format_table_to_markdown(data: List[List[str]], headers: Optional[List[str]]
     lines = []
 
     # Header row
-    lines.append("| " + " | ".join(str(h) for h in headers) + " |")
+    lines.append("| " + " | ".join(_escape_markdown_table_cell(h) for h in headers) + " |")
 
     # Separator row
     lines.append("| " + " | ".join("---" for _ in headers) + " |")
@@ -588,7 +595,7 @@ def format_table_to_markdown(data: List[List[str]], headers: Optional[List[str]]
     for row in data:
         # Pad row to match header length
         padded_row = list(row) + [""] * (len(headers) - len(row))
-        lines.append("| " + " | ".join(str(cell) for cell in padded_row[: len(headers)]) + " |")
+        lines.append("| " + " | ".join(_escape_markdown_table_cell(cell) for cell in padded_row[: len(headers)]) + " |")
 
     return "\n".join(lines)
 

@@ -58,6 +58,11 @@ try:
 except ImportError:
     convert_from_path = None
 
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+
 import config
 import utils
 
@@ -85,17 +90,15 @@ def _build_markitdown_kwargs() -> Dict[str, Any]:
         md_kwargs["keep_data_uris"] = True
 
     if config.MARKITDOWN_ENABLE_LLM_DESCRIPTIONS and config.MISTRAL_API_KEY:
-        try:
-            from openai import OpenAI
-
+        if OpenAI is None:
+            logger.warning("OpenAI package not installed. LLM image descriptions disabled.")
+        else:
             llm_client = OpenAI(
                 api_key=config.MISTRAL_API_KEY,
                 base_url=config.mistral_openai_compatible_base_url(),
             )
             md_kwargs["llm_client"] = llm_client
             md_kwargs["llm_model"] = config.MARKITDOWN_LLM_MODEL
-        except ImportError:
-            logger.warning("OpenAI package not installed. LLM image descriptions disabled.")
 
     if config.MARKITDOWN_LLM_PROMPT:
         md_kwargs["llm_prompt"] = config.MARKITDOWN_LLM_PROMPT
@@ -171,7 +174,10 @@ def convert_with_markitdown(
         Tuple of (success, markdown_content, error_message)
     """
     # Enforce file size limit
-    file_size_mb = file_path.stat().st_size / (1024 * 1024)
+    try:
+        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+    except OSError as e:
+        return False, None, f"Cannot read file: {e}"
     if file_size_mb > config.MARKITDOWN_MAX_FILE_SIZE_MB:
         return (
             False,
@@ -796,8 +802,9 @@ def convert_pdf_to_images(
         image_paths = []
         file_extension = "jpg" if config.PDF_IMAGE_FORMAT == "jpeg" else config.PDF_IMAGE_FORMAT
 
-        for i, temp_path_str in enumerate(temp_paths, 1):
-            temp_path = Path(temp_path_str)
+        for i, temp_path_item in enumerate(temp_paths, 1):
+            # paths_only=True returns path strings; coerce for stub variance (Image | str).
+            temp_path = Path(str(temp_path_item))
             target_path = output_dir / f"page_{i:03d}.{file_extension}"
             if temp_path.exists() and temp_path != target_path:
                 temp_path.replace(target_path)

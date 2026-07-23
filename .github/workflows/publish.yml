@@ -25,11 +25,19 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Run tests
-        run: python -m pytest tests/ -v
+      - name: Run format check
+        run: |
+          python -m black --check .
+          python -m isort --check-only .
 
       - name: Run lint
         run: python -m flake8 .
+
+      - name: Run typecheck
+        run: python -m pyright
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --cov=. --cov-fail-under=75
 
   publish:
     needs: test

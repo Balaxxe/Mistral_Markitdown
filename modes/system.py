@@ -142,7 +142,11 @@ def mode_maintenance() -> Tuple[bool, str]:
             if client:
                 deleted = mistral_converter.cleanup_uploaded_files(client)
                 if deleted > 0:
-                    msg = f"Cleaned up {deleted} old uploaded files from Mistral (>{config.UPLOAD_RETENTION_DAYS} days)"
+                    scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+                    msg = (
+                        f"Cleaned up {deleted} old uploaded files from Mistral "
+                        f"(>{config.UPLOAD_RETENTION_DAYS} days, scope={scope})"
+                    )
                     out(f"  ✓ {msg}")
                     actions_taken.append(msg)
                 else:

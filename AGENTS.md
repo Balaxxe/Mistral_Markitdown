@@ -22,6 +22,7 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 ## Structure
 
 - `main.py` -- CLI entry point and orchestration
+- `cli_files.py` -- input listing, validation, and interactive file selection
 - `config.py` -- configuration loading from .env and defaults
 - `schemas.py` -- Pydantic data models and validation
 - `mistral_converter.py` -- Mistral AI OCR/QnA/Batch conversion

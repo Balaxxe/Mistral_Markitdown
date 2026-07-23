@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ConfigDict, Field
 
+import config
+
 # Use the shared application logger configured in utils.setup_logging so all
 # modules emit with the same handlers/formatters. utils does not depend on
 # schemas, so importing it here is safe (no cycle).
@@ -320,9 +322,15 @@ class FormSignature(_BaseSchema):
 class FormDates(_BaseSchema):
     """Key dates in a form document."""
 
-    submission_date: Optional[str] = Field(None, description="Date submitted")
-    effective_date: Optional[str] = Field(None, description="Date effective")
-    expiration_date: Optional[str] = Field(None, description="Date of expiration")
+    submission_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date submitted (ISO 8601, YYYY-MM-DD)"
+    )
+    effective_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date effective (ISO 8601, YYYY-MM-DD)"
+    )
+    expiration_date: Optional[str] = Field(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date of expiration (ISO 8601, YYYY-MM-DD)"
+    )
 
 
 class FormDocument(_BaseSchema):
@@ -379,6 +387,8 @@ def get_document_schema(schema_type: str = "generic") -> Dict[str, Any]:
         Schema definition dictionary with name, schema, and description keys
     """
     if schema_type not in _DOCUMENT_MODEL_MAP:
+        if config.SCHEMA_STRICT_UNKNOWN_TYPES:
+            raise ValueError(f"Unknown document schema type: {schema_type!r}")
         logger.warning("Unknown document schema type %r, falling back to 'generic'", schema_type)
     model = _DOCUMENT_MODEL_MAP.get(schema_type, GenericDocument)
     return {
@@ -399,6 +409,8 @@ def get_bbox_schema(schema_type: str = "structured") -> Dict[str, Any]:
         Schema definition dictionary with name, schema, and description keys
     """
     if schema_type not in _BBOX_MODEL_MAP:
+        if config.SCHEMA_STRICT_UNKNOWN_TYPES:
+            raise ValueError(f"Unknown bbox schema type: {schema_type!r}")
         logger.warning("Unknown bbox schema type %r, falling back to 'structured'", schema_type)
     model = _BBOX_MODEL_MAP.get(schema_type, BBoxStructuredAnnotation)
     return {
@@ -430,6 +442,8 @@ def get_bbox_pydantic_model(annotation_type: str = "structured") -> Type[BaseMod
         Pydantic model class
     """
     if annotation_type not in _BBOX_MODEL_MAP:
+        if config.SCHEMA_STRICT_UNKNOWN_TYPES:
+            raise ValueError(f"Unknown bbox annotation type: {annotation_type!r}")
         logger.warning("Unknown bbox annotation type %r, falling back to 'structured'", annotation_type)
     return _BBOX_MODEL_MAP.get(annotation_type, BBoxStructuredAnnotation)
 
@@ -450,5 +464,7 @@ def get_document_pydantic_model(doc_type: str = "generic") -> Type[BaseModel]:
         Pydantic model class
     """
     if doc_type not in _DOCUMENT_MODEL_MAP:
+        if config.SCHEMA_STRICT_UNKNOWN_TYPES:
+            raise ValueError(f"Unknown document type: {doc_type!r}")
         logger.warning("Unknown document type %r, falling back to 'generic'", doc_type)
     return _DOCUMENT_MODEL_MAP.get(doc_type, GenericDocument)

@@ -184,6 +184,15 @@ class TestMarkdownFormatting:
         result = utils.format_table_to_markdown(data, headers=headers)
         assert "| 1 | 2 |  |" in result  # Padded
 
+    def test_format_table_escapes_pipes_and_newlines(self):
+        """Pipes/newlines in cells must not break Markdown table structure."""
+        headers = ["A|B", "Note"]
+        data = [["x|y", "line1\nline2"]]
+
+        result = utils.format_table_to_markdown(data, headers=headers)
+        assert "| A\\|B | Note |" in result
+        assert "| x\\|y | line1 line2 |" in result
+
 
 class TestTextCleaning:
     """Test text cleaning functions."""
@@ -1037,6 +1046,12 @@ class TestUiPrint:
         utils.ui_print("hello world")
         captured = capsys.readouterr()
         assert "hello world" in captured.out
+
+    def test_ui_print_sanitizes_ansi(self, capsys):
+        utils.ui_print("ok\x1b[31mRED\x1b[0m")
+        captured = capsys.readouterr()
+        assert "\x1b" not in captured.out
+        assert "okRED" in captured.out
 
     def test_ui_print_no_args(self, capsys):
         utils.ui_print()

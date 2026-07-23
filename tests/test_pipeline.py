@@ -731,6 +731,8 @@ class TestModeDocumentQna:
             mock_mc.upload_file_for_ocr.return_value = "https://example.com/doc"
             mock_mc.query_document_stream.return_value = (True, _fake_stream(), None)
             success, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
+            mock_mc.query_document_stream.assert_called_once()
+            assert mock_mc.query_document_stream.call_args.kwargs.get("strict_dns") is False
         assert success is True
         assert "1 question" in msg
 
