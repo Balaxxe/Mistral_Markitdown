@@ -367,9 +367,7 @@ class TestIsSignedUrlExpiryError:
     def test_signed_url_expiry_detected(self):
         assert mistral_converter.is_signed_url_expiry_error("The signed URL has expired") is True
         assert mistral_converter.is_signed_url_expiry_error("403 Forbidden") is False
-        assert (
-            mistral_converter.is_signed_url_expiry_error("403 Forbidden: signed URL has expired") is True
-        )
+        assert mistral_converter.is_signed_url_expiry_error("403 Forbidden: signed URL has expired") is True
         assert mistral_converter.is_signed_url_expiry_error("Failed to fetch document from URL") is True
         assert mistral_converter.is_signed_url_expiry_error("Signature mismatch") is True
         assert mistral_converter.is_signed_url_expiry_error("Access denied") is False

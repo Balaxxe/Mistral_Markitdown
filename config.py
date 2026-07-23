@@ -680,12 +680,9 @@ def validate_configuration() -> List[str]:
             "Supported values: ['csv', 'markdown']."
         )
 
-    # Validate CLEANUP_UPLOAD_SCOPE
+    # CLEANUP_UPLOAD_SCOPE is normalized at import; keep a defensive check if monkeypatched.
     if CLEANUP_UPLOAD_SCOPE not in {"registry", "all"}:
-        issues.append(
-            f"WARNING: CLEANUP_UPLOAD_SCOPE={CLEANUP_UPLOAD_SCOPE!r} is invalid. "
-            "Use 'registry' or 'all'."
-        )
+        issues.append(f"WARNING: CLEANUP_UPLOAD_SCOPE={CLEANUP_UPLOAD_SCOPE!r} is invalid. " "Use 'registry' or 'all'.")
 
     # Validate MISTRAL_SERVER_URL
     if MISTRAL_SERVER_URL:

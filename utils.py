@@ -595,9 +595,7 @@ def format_table_to_markdown(data: List[List[str]], headers: Optional[List[str]]
     for row in data:
         # Pad row to match header length
         padded_row = list(row) + [""] * (len(headers) - len(row))
-        lines.append(
-            "| " + " | ".join(_escape_markdown_table_cell(cell) for cell in padded_row[: len(headers)]) + " |"
-        )
+        lines.append("| " + " | ".join(_escape_markdown_table_cell(cell) for cell in padded_row[: len(headers)]) + " |")
 
     return "\n".join(lines)
 
