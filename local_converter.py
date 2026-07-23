@@ -802,8 +802,9 @@ def convert_pdf_to_images(
         image_paths = []
         file_extension = "jpg" if config.PDF_IMAGE_FORMAT == "jpeg" else config.PDF_IMAGE_FORMAT
 
-        for i, temp_path_str in enumerate(temp_paths, 1):
-            temp_path = Path(temp_path_str)
+        for i, temp_path_item in enumerate(temp_paths, 1):
+            # paths_only=True returns path strings; coerce for stub variance (Image | str).
+            temp_path = Path(str(temp_path_item))
             target_path = output_dir / f"page_{i:03d}.{file_extension}"
             if temp_path.exists() and temp_path != target_path:
                 temp_path.replace(target_path)

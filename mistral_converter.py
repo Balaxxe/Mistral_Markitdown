@@ -2939,7 +2939,10 @@ def submit_batch_ocr_job(
                 purpose="batch",
             )
 
-        batch_file_id = batch_data.id
+        uploaded_id = getattr(batch_data, "id", None)
+        if not isinstance(uploaded_id, str) or not uploaded_id:
+            return False, None, "Batch upload response missing file ID"
+        batch_file_id = uploaded_id
         logger.info("Batch file uploaded: %s", batch_file_id)
         _register_uploaded_file(batch_file_id, "batch")
 
