@@ -51,7 +51,7 @@ ffmpeg-python>=0.2.0
 # Requires: MARKITDOWN_ENABLE_PLUGINS=true in .env
 # MarkItDown extras equivalent: pip install markitdown[youtube-transcription]
 
-youtube-transcript-api>=0.6.1
+youtube-transcript-api>=1.2.4
 
 # ----------------------------------------------------------------------------
 # Azure Document Intelligence (upstream MarkItDown only)
