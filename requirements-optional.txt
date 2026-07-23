@@ -24,7 +24,7 @@
 # Requires: MARKITDOWN_ENABLE_LLM_DESCRIPTIONS=true in .env
 # Uses Mistral API key (no separate OpenAI key needed)
 
-openai>=1.0.0
+openai>=2.47.0
 
 # ----------------------------------------------------------------------------
 # Audio Transcription (Mode 5: Transcription)
@@ -38,7 +38,7 @@ openai>=1.0.0
 # MarkItDown extras equivalent: pip install markitdown[audio-transcription]
 
 pydub>=0.25.1
-SpeechRecognition>=3.10.0
+SpeechRecognition>=3.17.0
 
 # FFmpeg Python wrapper (optional - for advanced audio processing)
 # Note: Requires ffmpeg binary installed on system
@@ -51,7 +51,7 @@ ffmpeg-python>=0.2.0
 # Requires: MARKITDOWN_ENABLE_PLUGINS=true in .env
 # MarkItDown extras equivalent: pip install markitdown[youtube-transcription]
 
-youtube-transcript-api>=0.6.1
+youtube-transcript-api>=1.2.4
 
 # ----------------------------------------------------------------------------
 # Azure Document Intelligence (upstream MarkItDown only)

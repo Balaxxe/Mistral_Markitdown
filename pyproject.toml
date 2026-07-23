@@ -24,12 +24,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "markitdown[all]==0.1.5",
+    "markitdown[all]==0.1.6",
     "mistralai==2.7.1",
     "python-dotenv==1.2.2",
     "pydantic>=2,<3",
     "Pillow>=10,<13",
-    "pdfplumber==0.11.9",
+    "pdfplumber==0.11.10",
     "pdf2image==1.17.0",
 ]
 

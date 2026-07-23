@@ -3,7 +3,7 @@
 # For development (pytest, linters): see requirements-dev.txt
 
 # Core: MarkItDown with all optional format dependencies
-markitdown[all]==0.1.5
+markitdown[all]==0.1.6
 
 # Core: Mistral AI SDK v2 for OCR, QnA, and Batch API
 mistralai==2.7.1
@@ -18,7 +18,7 @@ pydantic>=2,<3
 Pillow>=10,<13
 
 # PDF table extraction beyond MarkItDown's built-in support
-pdfplumber==0.11.9
+pdfplumber==0.11.10
 
 # PDF to image conversion (requires Poppler system binary)
 pdf2image==1.17.0
