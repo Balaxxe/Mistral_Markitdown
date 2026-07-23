@@ -38,7 +38,7 @@ openai>=1.0.0
 # MarkItDown extras equivalent: pip install markitdown[audio-transcription]
 
 pydub>=0.25.1
-SpeechRecognition>=3.10.0
+SpeechRecognition>=3.17.0
 
 # FFmpeg Python wrapper (optional - for advanced audio processing)
 # Note: Requires ffmpeg binary installed on system
