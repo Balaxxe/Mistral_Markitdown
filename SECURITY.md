@@ -93,6 +93,14 @@ Batch job IDs entered interactively are validated against `^[a-zA-Z0-9_\-]{1,128
 
 `utils.safe_output_stem` derives output filenames to prevent path traversal and collisions. Files from outside the standard input directory receive a SHA-256-based hash suffix.
 
+### Input Path Confinement
+
+`STRICT_INPUT_PATH_RESOLUTION` defaults to `false` for compatibility with programmatic callers that pass arbitrary paths. Enable it for shared inboxes so `utils.validate_file` rejects paths (including symlink escapes) that resolve outside `input/`.
+
+### Account-wide upload cleanup
+
+`CLEANUP_UPLOAD_SCOPE=all` requires interactive confirmation or `CLEANUP_UPLOAD_ALL_CONFIRM=true` before maintenance deletes Files API objects account-wide.
+
 ### Repository / IDE configuration
 
 If `.cursor/` (or similar IDE automation) is committed for team sharing, review changes like any other config: avoid machine-specific paths, and keep secrets in `.env` or other ignored files (for example `.env.mcp.local`).
@@ -110,6 +118,7 @@ The following limits prevent runaway API spend and resource exhaustion:
 | `MISTRAL_QNA_MAX_FILE_SIZE_MB` | 50      | Hard reject before Document QnA upload          |
 | `MAX_BATCH_FILES`              | 100     | Hard reject in smart, MarkItDown, OCR, PDF→images, and batch modes |
 | `MAX_PAGES_PER_SESSION`        | 1000    | Hard reject (refuses further OCR after limit)   |
+| `PDF_IMAGE_MAX_PAGES`          | 100     | Cap local pdf2image rendering and reject unknown page counts (`0` = unlimited) |
 | `MAX_CONCURRENT_FILES`         | 5       | Thread pool cap for parallel processing         |
 | `MISTRAL_BATCH_TIMEOUT_HOURS`  | 24      | Batch job auto-cancellation                     |
 | `UPLOAD_RETENTION_DAYS`        | 7       | Auto-cleanup of uploaded files on Mistral       |

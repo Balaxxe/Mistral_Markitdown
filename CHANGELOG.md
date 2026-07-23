@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mistral_converter/` package split (client, upload, OCR, QnA, batch, SSRF, images) with facade-compatible `import mistral_converter`
+- `config.reload_settings()` for library embeds that change environment values after import; it refreshes every runtime setting, preserves process-environment precedence by default, and invalidates cached converter clients
+- `PDF_IMAGE_MAX_PAGES` (default 100) to bound local pdf2image rendering and reject capped conversions when the page count cannot be determined safely
+- `ENABLE_RETRIES` and `CLEANUP_UPLOAD_ALL_CONFIRM` configuration knobs
+- On-disk integration tests in `tests/test_integration_markitdown.py`
 - Local Mistral upload registry (`cache/mistral_upload_registry.json`) and `CLEANUP_UPLOAD_SCOPE` (`registry` default / `all`) so maintenance cleanup does not delete unrelated Files API objects on shared keys
 - `cli_files.py` for input listing/selection/validation (breaks `modes.batch` ↔ `main` circular import)
 - `MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION` (default false) to gate paid auto document classification
@@ -29,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Interactive QnA treats an immediate exit, EOF, or Ctrl+C as a successful cancellation while still reporting attempted question failures
+- OCR session page-budget resets are skipped while reservations are active; PDFs with unknown page counts reserve the entire remaining active budget
+- Table extraction sidecars never abort primary conversion
+- Tighter pyright warnings (`reportGeneralTypeIssues` / `reportAttributeAccessIssue` / `reportMissingImports`)
 - Bump `setuptools` to `>=83` / `~=83.0` (PYSEC-2026-3447) and upgrade it in the security workflow before `pip-audit`
 - Default `MISTRAL_DOCUMENT_URL_STRICT_DNS=true` (fail closed for user URLs); file QnA signed URLs relax DNS fail-closed
 - Default `TABLE_OUTPUT_FORMATS=markdown` (was empty / no sidecars)
@@ -37,11 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI coverage gate `--cov-fail-under=75`; publish workflow runs black/isort/pyright/tests like PR checks
 - `pyproject.toml` pins aligned with `requirements.txt` for dotenv/pdfplumber/pdf2image; `cli_files` packaged
 - `.pre-commit-config.yaml` bumped to match `requirements-dev.txt`: black 26.3.0, flake8 7.3.0, isort 8.0.0; replaced the mypy hook with pyright v1.1.408
-- Narrowed broad `except Exception` + `logger.error` in `mistral_converter.py` to use `logger.exception` on the unexpected branches of OCR, QnA file upload, batch submit/status/download/list paths (preserves tracebacks in logs)
+- Narrowed broad `except Exception` + `logger.error` in `mistral_converter/` to use `logger.exception` on the unexpected branches of OCR, QnA file upload, batch submit/status/download/list paths (preserves tracebacks in logs)
 - QnA retry no longer substring-matches error text: `modes.qna.mode_document_qna` calls `mistral_converter.is_signed_url_expiry_error()` which rejects permanent-auth hints before checking signed-URL expiry tokens
 - `schemas.py` now reuses `utils.logger` instead of wiring its own `logging.getLogger("document_converter")`
 - `.flake8` per-file ignores tightened: `main.py` no longer needs `C901`; new split test files covered by file-scoped `F401,W391`
-- Test count: 736 (up from ~723)
+- Test count: 787 (up from ~723)
 
 ### Fixed
 
@@ -53,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FormDates ISO `YYYY-MM-DD` patterns aligned with other schema date fields
 - `--mode qna` retry loop no longer triggers on benign messages containing the word "url" (e.g. `"Failed to resolve document URL"`), and always treats 401/Unauthorized as non-retryable
 - OCR response parsing and batch API errors now emit full tracebacks for unexpected failures instead of a truncated one-line `logger.error`
+- Upload cleanup fails closed for unknown scopes and accepts integer Unix timestamps returned by the Files API
+- Package reloads invalidate the cached Mistral client and reset idle session accounting without discarding active reservations
 
 ### Documentation
 

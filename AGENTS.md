@@ -25,7 +25,7 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 - `cli_files.py` -- input listing, validation, and interactive file selection
 - `config.py` -- configuration loading from .env and defaults
 - `schemas.py` -- Pydantic data models and validation
-- `mistral_converter.py` -- Mistral AI OCR/QnA/Batch conversion
+- `mistral_converter/` -- Mistral AI OCR/QnA/Batch conversion package (`import mistral_converter`)
 - `local_converter.py` -- local MarkItDown-based conversion
 - `modes/` -- mode orchestration (`batch.py`, `qna.py`, `system.py`)
 - `utils.py` -- shared utilities

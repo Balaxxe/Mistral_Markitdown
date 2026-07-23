@@ -149,6 +149,7 @@ def mode_batch_ocr(
     non_interactive: bool = False,
 ) -> Tuple[bool, str]:
     """Submit files for batch OCR processing at reduced cost."""
+    mistral_converter.reset_session_page_counter()
     logger.info("BATCH OCR MODE: %d file(s) in initial selection", len(file_paths))
 
     if not config.MISTRAL_API_KEY:

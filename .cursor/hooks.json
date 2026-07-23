@@ -3,21 +3,21 @@
   "hooks": {
     "beforeShellExecution": [
       {
-        "command": "node .cursor/hooks/shell-guard.js",
-        "matcher": "\\b[rR][mM]\\s+-|\\b[dD][eE][lL]\\s|\\b[eE][rR][aA][sS][eE]\\s|\\b[rR][mM][dD][iI][rR]\\b|\\b[rR][dD]\\s|[rR][eE][mM][oO][vV][eE]-[iI][tT][eE][mM]|[fF][iI][nN][dD]\\s+.*-[dD][eE][lL][eE][tT][eE]|\\b[mM][kK][fF][sS]|\\b[dD][dD]\\s|\\b[dD][iI][sS][kK][pP][aA][rR][tT]\\b|\\b[fF][oO][rR][mM][aA][tT]\\s+[a-zA-Z]:|\\b[gG][iI][tT]\\s+([pP][uU][sS][hH]|[rR][eE][sS][eE][tT]|[cC][lL][eE][aA][nN]|[cC][hH][eE][cC][kK][oO][uU][tT]|[bB][rR][aA][nN][cC][hH]|[sS][tT][aA][sS][hH])|[dD][rR][oO][pP]\\s+([tT][aA][bB][lL][eE]|[dD][aA][tT][aA][bB][aA][sS][eE]|[sS][cC][hH][eE][mM][aA]|[iI][nN][dD][eE][xX])|[tT][rR][uU][nN][cC][aA][tT][eE]\\s|[dD][eE][lL][eE][tT][eE]\\s+[fF][rR][oO][mM]|[tT][eE][rR][rR][aA][fF][oO][rR][mM]|\\b[tT][oO][fF][uU]\\s|[dD][oO][cC][kK][eE][rR]\\s+([sS][yY][sS][tT][eE][mM]|[vV][oO][lL][uU][mM][eE])\\s+[pP][rR][uU][nN][eE]|[kK][uU][bB][eE][cC][tT][lL]\\s+[dD][eE][lL][eE][tT][eE]|[hH][eE][lL][mM]\\s+([uU][nN][iI][nN][sS][tT][aA][lL][lL]|[dD][eE][lL][eE][tT][eE])|\\|\\s*([bB][aA][sS][hH]|[sS][hH]|[zZ][sS][hH]|[pP][wW][sS][hH]|[pP][oO][wW][eE][rR][sS][hH][eE][lL][lL]|[iI][eE][xX])\\b|[iI][nN][vV][oO][kK][eE]-|\\b[iI][eE][xX]\\b|[sS][hH][uU][tT][dD][oO][wW][nN]|\\b[rR][eE][bB][oO][oO][tT]\\b|[pP][oO][wW][eE][rR][oO][fF][fF]|\\b[hH][aA][lL][tT]\\b|[rR][eE][gG]\\s+[dD][eE][lL][eE][tT][eE]|\\b[sS][eE][tT][xX]\\s|[sS][eE][tT]-[eE][xX][eE][cC][uU][tT][iI][oO][nN][pP][oO][lL][iI][cC][yY]|[sS][cC][hH][tT][aA][sS][kK][sS]|\\.([eE][nN][vV]|[pP][eE][mM]|[pP]12|[pP][fF][xX])\\b|\\.[kK][eE][yY]\\b|[iI][dD]_[rR][sS][aA]|[iI][dD]_[eE][dD]25519|\\b[tT][wW][iI][nN][eE]\\s|\\b[pP][uU][bB][lL][iI][sS][hH]\\b|\\b[uU][nN][iI][nN][sS][tT][aA][lL][lL]\\b",
+        "command": "node .cursor/hooks/shell-guard.cjs",
+        "matcher": "\\b[rR][mM]\\s+-|\\b[dD][eE][lL]\\s|\\b[eE][rR][aA][sS][eE]\\s|\\b[rR][mM][dD][iI][rR]\\b|\\b[rR][dD]\\s|[rR][eE][mM][oO][vV][eE]-[iI][tT][eE][mM]|[fF][iI][nN][dD]\\s+.*-[dD][eE][lL][eE][tT][eE]|\\b[mM][kK][fF][sS]|\\b[dD][dD]\\s|\\b[dD][iI][sS][kK][pP][aA][rR][tT]\\b|\\b[fF][oO][rR][mM][aA][tT]\\s+[a-zA-Z]:|\\b[gG][iI][tT]\\s+[pP][uU][sS][hH]\\b[^|;]*(\\s-f\\b|--[fF][oO][rR][cC][eE]|--[dD][eE][lL][eE][tT][eE])|\\b[gG][iI][tT]\\s+[rR][eE][sS][eE][tT]\\s+--[hH][aA][rR][dD]|\\b[gG][iI][tT]\\s+[cC][lL][eE][aA][nN]\\b[^|;]*\\s-[a-zA-Z]*[fF]|\\b[gG][iI][tT]\\s+[cC][hH][eE][cC][kK][oO][uU][tT]\\b[^|;]*(\\s-f\\b|--[fF][oO][rR][cC][eE])|\\b[gG][iI][tT]\\s+[bB][rR][aA][nN][cC][hH]\\b[^|;]*(\\s-D\\b|--[dD][eE][lL][eE][tT][eE]\\s+--[fF][oO][rR][cC][eE])|\\b[gG][iI][tT]\\s+[sS][tT][aA][sS][hH]\\s+([dD][rR][oO][pP]|[cC][lL][eE][aA][rR])|[dD][rR][oO][pP]\\s+([tT][aA][bB][lL][eE]|[dD][aA][tT][aA][bB][aA][sS][eE]|[sS][cC][hH][eE][mM][aA]|[iI][nN][dD][eE][xX])|[tT][rR][uU][nN][cC][aA][tT][eE]\\s|[dD][eE][lL][eE][tT][eE]\\s+[fF][rR][oO][mM]|\\b([tT][eE][rR][rR][aA][fF][oO][rR][mM]|[tT][oO][fF][uU])\\s+([dD][eE][sS][tT][rR][oO][yY]|[aA][pP][pP][lL][yY])|[dD][oO][cC][kK][eE][rR]\\s+([sS][yY][sS][tT][eE][mM]|[vV][oO][lL][uU][mM][eE])\\s+[pP][rR][uU][nN][eE]|[kK][uU][bB][eE][cC][tT][lL]\\s+[dD][eE][lL][eE][tT][eE]|[hH][eE][lL][mM]\\s+([uU][nN][iI][nN][sS][tT][aA][lL][lL]|[dD][eE][lL][eE][tT][eE])|\\|\\s*([bB][aA][sS][hH]|[sS][hH]|[zZ][sS][hH]|[pP][wW][sS][hH]|[pP][oO][wW][eE][rR][sS][hH][eE][lL][lL]|[iI][eE][xX])\\b|[iI][nN][vV][oO][kK][eE]-[eE][xX][pP][rR][eE][sS][sS][iI][oO][nN]|\\b[iI][eE][xX]\\b|\\b[sS][hH][uU][tT][dD][oO][wW][nN]\\b|\\b[rR][eE][bB][oO][oO][tT]\\b|\\b[pP][oO][wW][eE][rR][oO][fF][fF]\\b|\\b[hH][aA][lL][tT]\\b|[rR][eE][gG]\\s+[dD][eE][lL][eE][tT][eE]|\\b[sS][eE][tT][xX]\\s|[sS][eE][tT]-[eE][xX][eE][cC][uU][tT][iI][oO][nN][pP][oO][lL][iI][cC][yY]|[sS][cC][hH][tT][aA][sS][kK][sS][^|;]*/[dD][eE][lL][eE][tT][eE]|\\.([eE][nN][vV]|[pP][eE][mM]|[pP]12|[pP][fF][xX])\\b|\\.[kK][eE][yY]\\b|[iI][dD]_[rR][sS][aA]|[iI][dD]_[eE][dD]25519|\\b[tT][wW][iI][nN][eE]\\s+[uU][pP][lL][oO][aA][dD]|\\b[mM][aA][kK][eE]\\s+[pP][uU][bB][lL][iI][sS][hH]|\\b[pP][iI][pP]\\s+[uU][nN][iI][nN][sS][tT][aA][lL][lL]\\b",
         "timeout": 10,
         "failClosed": true
       }
     ],
     "afterFileEdit": [
       {
-        "command": "node .cursor/hooks/format-after-edit.js",
+        "command": "node .cursor/hooks/format-after-edit.cjs",
         "timeout": 30
       }
     ],
     "stop": [
       {
-        "command": "node .cursor/hooks/stop-scoped-tests.js",
+        "command": "node .cursor/hooks/stop-scoped-tests.cjs",
         "timeout": 600,
         "loop_limit": 3
       }

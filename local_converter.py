@@ -769,8 +769,35 @@ def convert_pdf_to_images(
         if dpi is None:
             dpi = config.PDF_IMAGE_DPI
 
-        if thread_count is None:
-            thread_count = config.PDF_IMAGE_THREAD_COUNT
+        resolved_thread_count = int(config.PDF_IMAGE_THREAD_COUNT if thread_count is None else thread_count)
+
+        max_pages = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
+        if max_pages > 0:
+            try:
+                analysis = analyze_file_content(pdf_path)
+                page_count = int(analysis.get("page_count") or 0)
+            except Exception as e:
+                logger.warning("Could not determine page count for %s: %s", pdf_path.name, e)
+                page_count = 0
+            if page_count <= 0:
+                return (
+                    False,
+                    [],
+                    (
+                        "Unable to determine PDF page count; refusing conversion "
+                        f"because PDF_IMAGE_MAX_PAGES is {max_pages}. Set the limit "
+                        "to 0 only if unbounded rendering is intentional."
+                    ),
+                )
+            if page_count > max_pages:
+                return (
+                    False,
+                    [],
+                    (
+                        f"PDF has {page_count} pages; exceeds PDF_IMAGE_MAX_PAGES "
+                        f"({max_pages}). Lower DPI, split the PDF, or raise the limit."
+                    ),
+                )
 
         logger.info(
             "Converting PDF to images: %s (DPI: %d, Format: %s)",
@@ -789,7 +816,7 @@ def convert_pdf_to_images(
             "output_folder": str(output_dir),
             "fmt": config.PDF_IMAGE_FORMAT,
             "poppler_path": poppler_path,
-            "thread_count": max(1, thread_count),
+            "thread_count": max(1, resolved_thread_count),
             "use_pdftocairo": config.PDF_IMAGE_USE_PDFTOCAIRO,
             "output_file": "page",
             "paths_only": True,

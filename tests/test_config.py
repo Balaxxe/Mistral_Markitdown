@@ -10,6 +10,20 @@ import pytest
 import config
 
 
+@pytest.fixture
+def restore_runtime_config():
+    """Restore module-level settings after tests exercise the reload API."""
+    settings = {name: getattr(config, name) for name in config._runtime_setting_loaders}
+    dotenv_managed_values = dict(config._dotenv_managed_values)
+    initialized = config._initialized
+    init_issues = config._init_issues
+    yield
+    config.__dict__.update(settings)
+    config._dotenv_managed_values = dotenv_managed_values
+    config._initialized = initialized
+    config._init_issues = init_issues
+
+
 class TestDirectoryCreation:
     """Test directory creation functionality."""
 
@@ -252,6 +266,150 @@ class TestSafeFloatBelowMinWarning:
         monkeypatch.setenv("TEST_FLOAT_OK", "2.5")
         result = config._safe_float("TEST_FLOAT_OK", 1.0, min_val=0.5)
         assert result == 2.5
+
+
+class TestReloadSettings:
+    """Reloading uses the same complete setting definitions as initial import."""
+
+    def test_reload_updates_security_and_behavior_settings(self, monkeypatch, restore_runtime_config):
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+        environment = {
+            "MISTRAL_DOCUMENT_URL_STRICT_DNS": "false",
+            "MISTRAL_ENABLE_STRUCTURED_OUTPUT": "false",
+            "MARKITDOWN_ENABLE_PLUGINS": "true",
+            "MISTRAL_QNA_SYSTEM_PROMPT": "refreshed prompt",
+            "SAVE_PROCESSING_LOGS": "false",
+            "ENABLE_BATCH_METADATA": "false",
+            "SCHEMA_STRICT_UNKNOWN_TYPES": "true",
+            "TABLE_OUTPUT_FORMATS": "csv",
+        }
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+
+        config.reload_settings()
+
+        assert config.MISTRAL_DOCUMENT_URL_STRICT_DNS is False
+        assert config.MISTRAL_ENABLE_STRUCTURED_OUTPUT is False
+        assert config.MARKITDOWN_ENABLE_PLUGINS is True
+        assert config.MISTRAL_QNA_SYSTEM_PROMPT == "refreshed prompt"
+        assert config.SAVE_PROCESSING_LOGS is False
+        assert config.ENABLE_BATCH_METADATA is False
+        assert config.SCHEMA_STRICT_UNKNOWN_TYPES is True
+        assert config.TABLE_OUTPUT_FORMATS == ["csv"]
+
+    def test_reload_preserves_environment_precedence_unless_explicitly_overridden(
+        self, monkeypatch, restore_runtime_config
+    ):
+        calls = []
+
+        def fake_load_dotenv(*, override=False):
+            calls.append(override)
+            if override:
+                monkeypatch.setenv("MISTRAL_API_KEY", "dotenv-key")
+            return True
+
+        monkeypatch.setenv("MISTRAL_API_KEY", "environment-key")
+        monkeypatch.setattr(config, "load_dotenv", fake_load_dotenv)
+
+        config.reload_settings()
+        assert config.MISTRAL_API_KEY == "environment-key"
+
+        config.reload_settings(override_dotenv=True)
+        assert config.MISTRAL_API_KEY == "dotenv-key"
+        assert calls == [False, True]
+
+    def test_reload_rereads_real_dotenv_values_and_preserves_later_process_override(
+        self, monkeypatch, restore_runtime_config, tmp_path
+    ):
+        from dotenv import dotenv_values as real_dotenv_values
+        from dotenv import load_dotenv as real_load_dotenv
+
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text("MISTRAL_OCR_MODEL=first-model\n", encoding="utf-8")
+        monkeypatch.delenv("MISTRAL_OCR_MODEL", raising=False)
+        monkeypatch.setattr(
+            config,
+            "dotenv_values",
+            lambda: real_dotenv_values(dotenv_path=dotenv_path),
+        )
+        monkeypatch.setattr(
+            config,
+            "load_dotenv",
+            lambda *, override=False: real_load_dotenv(dotenv_path=dotenv_path, override=override),
+        )
+
+        config.reload_settings()
+        assert config.MISTRAL_OCR_MODEL == "first-model"
+
+        dotenv_path.write_text("MISTRAL_OCR_MODEL=second-model\n", encoding="utf-8")
+        config.reload_settings()
+        assert config.MISTRAL_OCR_MODEL == "second-model"
+
+        monkeypatch.setenv("MISTRAL_OCR_MODEL", "process-model")
+        dotenv_path.write_text("MISTRAL_OCR_MODEL=third-model\n", encoding="utf-8")
+        config.reload_settings()
+        assert config.MISTRAL_OCR_MODEL == "process-model"
+
+    def test_reload_derives_enable_retries_when_explicit_flag_is_unset(self, monkeypatch, restore_runtime_config):
+        monkeypatch.delenv("ENABLE_RETRIES", raising=False)
+        monkeypatch.setenv("MAX_RETRIES", "0")
+        monkeypatch.setattr(config, "dotenv_values", lambda: {})
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+        assert config.ENABLE_RETRIES is False
+
+        monkeypatch.setenv("MAX_RETRIES", "2")
+        config.reload_settings()
+        assert config.ENABLE_RETRIES is True
+
+    def test_reload_invalidates_clients_and_initialization_cache(self, monkeypatch, restore_runtime_config):
+        import local_converter
+        from mistral_converter import client as mistral_client
+
+        old_mistral_client = object()
+        old_markitdown_instance = object()
+        monkeypatch.setattr(mistral_client, "_client_instance", old_mistral_client)
+        monkeypatch.setattr(local_converter, "_markitdown_instance", old_markitdown_instance)
+        local_converter._markitdown_instances.instance = old_markitdown_instance
+        local_converter._markitdown_instances.generation = local_converter._markitdown_generation
+        old_markitdown_generation = local_converter._markitdown_generation
+        monkeypatch.setenv("MISTRAL_API_KEY", "new-api-key")
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+        config._initialized = True
+        config._init_issues = ["stale issue"]
+
+        config.reload_settings()
+
+        assert config.MISTRAL_API_KEY == "new-api-key"
+        assert mistral_client._client_instance is None
+        assert local_converter._markitdown_instance is local_converter._MARKITDOWN_UNSET
+        assert local_converter._markitdown_generation == old_markitdown_generation + 1
+        assert not hasattr(local_converter._markitdown_instances, "instance")
+        assert config._initialized is False
+        assert config._init_issues == []
+
+    def test_reload_leaves_path_constants_unchanged_and_restores_compatibility_default(
+        self, monkeypatch, restore_runtime_config
+    ):
+        path_names = (
+            "BASE_DIR",
+            "INPUT_DIR",
+            "OUTPUT_MD_DIR",
+            "OUTPUT_TXT_DIR",
+            "OUTPUT_IMAGES_DIR",
+            "CACHE_DIR",
+            "LOGS_DIR",
+            "METADATA_DIR",
+        )
+        original_paths = {name: getattr(config, name) for name in path_names}
+        monkeypatch.delenv("STRICT_INPUT_PATH_RESOLUTION", raising=False)
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.STRICT_INPUT_PATH_RESOLUTION is False
+        assert all(getattr(config, name) is path for name, path in original_paths.items())
 
 
 class TestValidateConfigurationBranches:

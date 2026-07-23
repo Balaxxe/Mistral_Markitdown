@@ -386,7 +386,9 @@ class TestConvertWithMarkItDown:
             success, content, error = local_converter.convert_with_markitdown(test_file)
 
         assert success is True
+        assert content is not None
         assert "hello world" in content
+        assert (tmp_path / "doc.md").read_text(encoding="utf-8") == content
         assert error is None
 
     def test_conversion_exception(self, tmp_path, monkeypatch):
@@ -636,6 +638,10 @@ class TestSaveTablesToFiles:
 class TestConvertPdfToImages:
     """Test PDF to images conversion with mocks."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_page_limit_for_legacy_mock_pdfs(self, monkeypatch):
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 0)
+
     def test_not_installed(self, tmp_path):
         with patch.object(local_converter, "convert_from_path", None):
             success, paths, error = local_converter.convert_pdf_to_images(tmp_path / "test.pdf")
@@ -675,6 +681,44 @@ class TestConvertPdfToImages:
         mock_convert.assert_called_once()
         kwargs = mock_convert.call_args[1]
         assert kwargs["paths_only"] is True
+
+    def test_unknown_page_count_fails_closed_when_limit_enabled(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "unknown_pages"
+        pdf_file = tmp_path / "unknown.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 5)
+
+        with patch.object(local_converter, "analyze_file_content", return_value={"page_count": 0}):
+            with patch.object(local_converter, "convert_from_path") as mock_convert:
+                success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is False
+        assert paths == []
+        assert error is not None and "Unable to determine PDF page count" in error
+        mock_convert.assert_not_called()
+
+    def test_known_page_count_renders_without_last_page_truncation(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "known_pages"
+        output_dir.mkdir()
+        pdf_file = tmp_path / "known.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4")
+        rendered = output_dir / "page-1.png"
+        rendered.touch()
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 5)
+        monkeypatch.setattr(config, "PDF_IMAGE_FORMAT", "png")
+        monkeypatch.setattr(config, "PDF_IMAGE_DPI", 200)
+        monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
+        monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
+        monkeypatch.setattr(config, "POPPLER_PATH", "")
+
+        with patch.object(local_converter, "analyze_file_content", return_value={"page_count": 1}):
+            with patch.object(local_converter, "convert_from_path", return_value=[str(rendered)]) as mock_convert:
+                success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is True
+        assert error is None
+        assert paths == [output_dir / "page_001.png"]
+        assert "last_page" not in mock_convert.call_args.kwargs
 
     def test_handles_conversion_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
@@ -1184,6 +1228,10 @@ class TestSaveTablesToCsv:
 class TestConvertPdfToImagesPng:
     """Line 688: PNG format save branch."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_page_limit_for_legacy_mock_pdfs(self, monkeypatch):
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 0)
+
     def test_png_format(self, tmp_path, monkeypatch):
         output_dir = tmp_path / "png_pages"
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
@@ -1440,6 +1488,10 @@ class TestSaveTablesNormFallback:
 
 class TestConvertPdfToImagesOtherFormat:
     """Line 795: generic format save (not jpeg, not png)."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_page_limit_for_legacy_mock_pdfs(self, monkeypatch):
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 0)
 
     def test_tiff_format(self, tmp_path, monkeypatch):
         """Other format branch uses PDF_IMAGE_FORMAT.upper()."""

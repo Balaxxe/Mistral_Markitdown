@@ -9,6 +9,7 @@ Tests cover:
 - Client cache invalidation (reset_mistral_client)
 """
 
+import importlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -183,6 +184,23 @@ class TestClientCacheInvalidation:
 
         assert all(r is None for r in results)
 
+    def test_package_reload_resets_cached_idle_state(self, monkeypatch):
+        """Reloading the compatibility facade mirrors the old module's fresh state."""
+        from mistral_converter import client as client_state
+        from mistral_converter import session as session_state
+
+        monkeypatch.setattr(client_state, "_client_instance", object())
+        monkeypatch.setattr(session_state, "_session_pages_processed", 7)
+        monkeypatch.setattr(session_state, "_session_pages_inflight", 0)
+        monkeypatch.setattr(session_state, "_session_pages_warned", True)
+
+        importlib.reload(mistral_converter)
+
+        assert mistral_converter._client_instance is None
+        assert mistral_converter._session_pages_processed == 0
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter._session_pages_warned is False
+
 
 # ============================================================================
 # _is_weak_page Digit Ratio Tests
@@ -334,6 +352,68 @@ class TestCommitSessionPages:
         assert mistral_converter._session_pages_processed == 0
 
 
+class TestSessionPageReservations:
+    """Session reservations remain conservative and internally consistent."""
+
+    def test_known_pdf_over_cap_is_rejected_before_ocr(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1000)
+        monkeypatch.setattr("local_converter.analyze_file_content", lambda _path: {"page_count": 1500})
+
+        estimate = mistral_converter._estimate_session_pages_for_ocr(tmp_path / "large.pdf", None)
+
+        assert estimate == 1500
+        assert mistral_converter._reserve_session_pages(estimate) is False
+
+    def test_unknown_pdf_reserves_remaining_active_budget(self, monkeypatch, tmp_path):
+        import mistral_converter.session as session_state
+
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1000)
+        monkeypatch.setattr("local_converter.analyze_file_content", lambda _path: {"page_count": 0})
+        monkeypatch.setattr(session_state, "_session_pages_processed", 125)
+        monkeypatch.setattr(session_state, "_session_pages_inflight", 0)
+
+        estimate = mistral_converter._estimate_session_pages_for_ocr(tmp_path / "unknown.pdf", None)
+
+        assert estimate == 875
+
+    def test_unknown_pdf_fallback_is_capped_by_session_limit(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 100)
+        monkeypatch.setattr("local_converter.analyze_file_content", lambda _path: {"page_count": 0})
+
+        estimate = mistral_converter._estimate_session_pages_for_ocr(tmp_path / "unknown.pdf", None)
+
+        assert estimate == 100
+
+    def test_reset_preserves_inflight_reservation_until_commit(self, monkeypatch):
+        import mistral_converter.session as session_state
+
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 100)
+        mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
+        mistral_converter.reset_session_page_counter()
+        monkeypatch.setattr(session_state, "_session_pages_processed", 10)
+        assert mistral_converter._reserve_session_pages(80) is True
+
+        mistral_converter.reset_session_page_counter()
+
+        assert mistral_converter._session_pages_inflight == 80
+        assert mistral_converter._session_pages_processed == 10
+        assert mistral_converter._reserve_session_pages(11) is False
+        assert mistral_converter._commit_session_pages(80, 5) is True
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter._session_pages_processed == 15
+
+    def test_commit_and_release_never_make_inflight_negative(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 100)
+        mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
+        mistral_converter.reset_session_page_counter()
+
+        assert mistral_converter._commit_session_pages(10, 0) is True
+        assert mistral_converter._session_pages_inflight == 0
+
+        mistral_converter._release_session_pages_reservation(10)
+        assert mistral_converter._session_pages_inflight == 0
+
+
 # ============================================================================
 # get_retry_config Tests
 # ============================================================================
@@ -346,6 +426,17 @@ class TestGetRetryConfig:
         monkeypatch.setattr(config, "MAX_RETRIES", 0)
         result = mistral_converter.get_retry_config()
         assert result is None
+
+    def test_returns_none_when_retries_explicitly_disabled(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_RETRIES", 3)
+        monkeypatch.setattr(config, "ENABLE_RETRIES", False)
+        mock_retries = MagicMock()
+
+        with patch.object(mistral_converter, "retries", mock_retries):
+            result = mistral_converter.get_retry_config()
+
+        assert result is None
+        mock_retries.BackoffStrategy.assert_not_called()
 
     def test_returns_config_when_retries_available(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_RETRIES", 3)
@@ -2981,21 +3072,27 @@ class TestCleanupUploadedFilesEdgeCases:
         count = mistral_converter.cleanup_uploaded_files(mock_client)
         assert count == 0
 
-    def test_unexpected_created_at_type(self):
-        """Lines 563-565: unexpected type for created_at triggers debug log."""
+    def test_integer_created_at_is_parsed_as_unix_timestamp(self):
+        """The SDK exposes FileSchema.created_at as an integer Unix timestamp."""
+        from datetime import datetime, timedelta, timezone
+
         mock_file = MagicMock()
-        mock_file.id = "file_weird"
-        mock_file.created_at = 12345  # integer, unexpected type
+        mock_file.id = "file_old"
+        mock_file.created_at = int((datetime.now(timezone.utc) - timedelta(days=60)).timestamp())
 
         mock_response = MagicMock()
         mock_response.data = [mock_file]
         mock_response.total = 1
+        empty_response = MagicMock()
+        empty_response.data = []
+        empty_response.total = 0
 
         mock_client = MagicMock()
-        mock_client.files.list.return_value = mock_response
+        mock_client.files.list.side_effect = [mock_response, empty_response]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=30)
-        assert count == 0
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="file_old")
 
     def test_pagination_by_total(self):
         """Lines 577-579: pagination stops when total is reached."""
@@ -3857,6 +3954,16 @@ class TestCleanupOuterException:
 
 class TestCleanupUploadRegistry:
     """Registry-scoped cleanup only deletes locally tracked uploads."""
+
+    def test_invalid_scope_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "unexpected")
+        mock_client = MagicMock()
+
+        count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=7)
+
+        assert count == 0
+        mock_client.files.list.assert_not_called()
+        mock_client.files.delete.assert_not_called()
 
     def test_registry_scope_deletes_old_tracked_only(self, monkeypatch, tmp_path):
         from datetime import datetime, timedelta, timezone

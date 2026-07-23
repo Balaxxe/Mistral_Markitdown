@@ -76,6 +76,8 @@ def mode_document_qna(
     if not config.MISTRAL_API_KEY:
         return False, "Document QnA requires MISTRAL_API_KEY to be set"
 
+    mistral_converter.reset_session_page_counter()
+
     url_mode = bool((qna_document_url or "").strip())
     if url_mode:
         doc_url = (qna_document_url or "").strip()
@@ -83,6 +85,11 @@ def mode_document_qna(
         if not ok_url:
             return False, f"Invalid document URL: {url_err}"
         display_name = doc_url[:80] + ("…" if len(doc_url) > 80 else "")
+        # Local DNS checks are not a full SSRF barrier (Mistral re-resolves).
+        utils.ui_print(
+            "NOTE: URL QnA validates HTTPS/DNS locally, but cannot prevent all "
+            "DNS-rebinding SSRF. Prefer file upload for untrusted hosts."
+        )
     else:
         if len(file_paths) != 1:
             utils.ui_print("\nPlease select exactly 1 file to query.\n")
@@ -171,6 +178,7 @@ def mode_document_qna(
     utils.ui_print("Type 'exit' or 'quit' to return to menu.\n")
 
     questions_asked = 0
+    questions_failed = 0
     while True:  # pragma: no cover
         try:
             question = input("Question: ").strip()
@@ -181,10 +189,16 @@ def mode_document_qna(
             if ok:
                 questions_asked += 1
             else:
+                questions_failed += 1
                 utils.ui_print(f"\nError: {qmsg}\n")
 
-        except KeyboardInterrupt:
+        except (EOFError, KeyboardInterrupt):
             break
 
     label = display_name if url_mode else (file_path.name if file_path else "document")
+    if questions_failed:
+        return (
+            False,
+            f"Asked {questions_asked} question(s) successfully; {questions_failed} failed about {label}",
+        )
     return True, f"Asked {questions_asked} question(s) about {label}"

@@ -181,8 +181,10 @@ Common fixtures are available in `tests/conftest.py`:
 Mistral_Markitdown/
 ├── main.py                  # Main application entry point: Convert (Smart), Convert (MarkItDown), Convert (Mistral OCR), PDF to Images, Document QnA, Batch OCR, System Status
 ├── config.py                # Configuration management (90+ options)
+├── cli_files.py             # Input discovery, validation, and selection
 ├── local_converter.py       # MarkItDown integration & table extraction
-├── mistral_converter.py     # Mistral AI OCR integration
+├── mistral_converter/       # Mistral client, upload, OCR, QnA, batch, URL validation, and image helpers
+├── modes/                   # Batch, QnA, maintenance, and system-status orchestration
 ├── utils.py                 # Utility functions (caching, logging, formatting)
 ├── schemas.py               # JSON schemas for structured extraction
 │
@@ -207,7 +209,11 @@ Mistral_Markitdown/
 │   ├── conftest.py          # Pytest fixtures
 │   ├── test_config.py       # Configuration tests
 │   ├── test_local_converter.py    # Local converter tests
-│   ├── test_mistral_converter.py  # OCR/QnA/Batch helper tests
+│   ├── test_mistral_converter.py  # OCR, client, upload, image, and schema-format helper tests
+│   ├── test_mistral_batch.py      # Batch API tests
+│   ├── test_mistral_qna.py        # Document QnA tests
+│   ├── test_mistral_url_validation.py # URL and SSRF validation tests
+│   ├── test_integration_markitdown.py # On-disk MarkItDown integration tests
 │   ├── test_pipeline.py     # End-to-end pipeline tests
 │   ├── test_schemas.py      # Schema validation tests
 │   └── test_utils.py        # Utility function tests
@@ -336,7 +342,7 @@ pre-commit run --all-files
 
 ## Code Standards
 
-- **Docstrings:** Google format (see `mistral_converter.py` for examples)
+- **Docstrings:** Google format (see `mistral_converter/` for examples)
 - **Commit messages:** Follow [Conventional Commits](https://www.conventionalcommits.org/) — `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`
 - **Test coverage:** Maintain 75%+ overall coverage; add tests for all new features
 - **PR requirements:** All PRs must pass `make check` (lint + tests) before merge

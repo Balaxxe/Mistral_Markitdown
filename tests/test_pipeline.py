@@ -32,6 +32,7 @@ import mistral_converter
 # that mock converter dependencies need to target these namespaces directly.
 import modes.batch as _modes_batch
 import modes.qna as _modes_qna
+import modes.system as _modes_system
 import utils
 
 
@@ -1081,6 +1082,64 @@ class TestModeMaintenance:
         ok, msg = main.mode_maintenance()
         assert ok is True
 
+    def test_upload_cleanup_invalid_scope_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
+        monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", True)
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "unexpected")
+
+        with patch.object(mistral_converter, "get_mistral_client") as get_client:
+            with patch.object(mistral_converter, "cleanup_uploaded_files") as cleanup:
+                ok, _msg = main.mode_maintenance()
+
+        assert ok is True
+        get_client.assert_not_called()
+        cleanup.assert_not_called()
+
+    def test_account_wide_cleanup_non_tty_requires_opt_in(self, monkeypatch):
+        monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
+        monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", True)
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_ALL_CONFIRM", False)
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = False
+        monkeypatch.setattr(_modes_system.sys, "stdin", fake_stdin)
+
+        with patch.object(mistral_converter, "get_mistral_client") as get_client:
+            with patch.object(mistral_converter, "cleanup_uploaded_files") as cleanup:
+                ok, _msg = main.mode_maintenance()
+
+        assert ok is True
+        get_client.assert_not_called()
+        cleanup.assert_not_called()
+
+    def test_account_wide_cleanup_config_opt_in_permits_cleanup(self, monkeypatch):
+        monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
+        monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", True)
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_ALL_CONFIRM", True)
+        mock_client = MagicMock()
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            with patch.object(mistral_converter, "cleanup_uploaded_files", return_value=2) as cleanup:
+                ok, msg = main.mode_maintenance()
+
+        assert ok is True
+        assert "2 old uploaded" in msg
+        cleanup.assert_called_once_with(mock_client)
+
+    @pytest.mark.parametrize(("answer", "expected"), [("yes", True), ("YES", True), ("no", False), ("y", False)])
+    def test_account_wide_cleanup_interactive_requires_exact_yes(self, answer, expected, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_ALL_CONFIRM", False)
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        monkeypatch.setattr(_modes_system.sys, "stdin", fake_stdin)
+        monkeypatch.setattr("builtins.input", lambda _prompt: answer)
+
+        assert _modes_system._confirm_cleanup_upload_all() is expected
+
     def test_maintenance_mode_cli(self, monkeypatch):
         """Test maintenance mode via CLI --mode flag."""
         monkeypatch.setattr("sys.argv", ["main.py", "--mode", "maintenance"])
@@ -1854,7 +1913,28 @@ class TestModeDocumentQnaExpanded:
                     with patch("builtins.input", side_effect=inputs):
                         ok, msg = main.mode_document_qna([pdf])
 
+        assert ok is False
+        assert "0 question" in msg
+
+    @pytest.mark.parametrize("answer", ["", "exit", "quit"])
+    def test_qna_immediate_cancel_succeeds(self, answer, tmp_path, monkeypatch):
+        pdf = tmp_path / "test.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 1)
+
+        mock_client = MagicMock()
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            with patch.object(
+                mistral_converter,
+                "upload_file_for_ocr",
+                return_value="https://example.com/doc",
+            ):
+                with patch("builtins.input", return_value=answer):
+                    ok, msg = main.mode_document_qna([pdf])
+
         assert ok is True
+        assert "0 question" in msg
 
     def test_qna_keyboard_interrupt(self, tmp_path, monkeypatch):
         """KeyboardInterrupt breaks QnA loop."""
@@ -1876,6 +1956,7 @@ class TestModeDocumentQnaExpanded:
                     ok, msg = main.mode_document_qna([pdf])
 
         assert ok is True
+        assert "0 question" in msg
 
     def test_qna_stream_iteration_error(self, tmp_path, monkeypatch):
         """Lines 378-379: stream raises exception during iteration."""
@@ -1907,7 +1988,8 @@ class TestModeDocumentQnaExpanded:
                     with patch("builtins.input", side_effect=inputs):
                         ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
+        assert ok is False
+        assert "0 question" in msg
 
     def test_qna_url_refresh_fails(self, tmp_path, monkeypatch):
         """URL refresh fails during loop."""
@@ -1928,7 +2010,8 @@ class TestModeDocumentQnaExpanded:
                 with patch("builtins.input", side_effect=inputs):
                     ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
+        assert ok is False
+        assert "0 question" in msg
 
 
 class TestShouldUseOcrRouting:

@@ -631,6 +631,16 @@ PDF_IMAGE_THREAD_COUNT=4
 PDF_IMAGE_USE_PDFTOCAIRO=true
 ```
 
+### PDF_IMAGE_MAX_PAGES
+
+- **Type:** Integer
+- **Default:** `100`
+- **Description:** Cap pages rendered by pdf2image (`0` disables the cap). When the cap is enabled, conversion is refused if the page count cannot be determined safely.
+
+```ini
+PDF_IMAGE_MAX_PAGES=100
+```
+
 ---
 
 ## System Paths (Windows Only)
@@ -750,7 +760,7 @@ MAX_PAGES_PER_SESSION=1000
 
 - **Type:** Integer
 - **Default:** `3`
-- **Description:** Set to `0` to disable retries. Any positive value enables SDK exponential backoff. The SDK does not honor a fixed attempt count; elapsed time is bounded by `RETRY_MAX_ELAPSED_TIME_MS`.
+- **Description:** Set to `0` to disable retries. Any positive value enables SDK exponential backoff. This is **not** a max-attempt count; elapsed time is bounded by `RETRY_MAX_ELAPSED_TIME_MS`. See also `ENABLE_RETRIES`.
 
 ```ini
 MAX_RETRIES=3
@@ -953,15 +963,35 @@ MARKITDOWN_MAX_FILE_SIZE_MB=100
 
 - **Type:** Boolean
 - **Default:** `false`
-- **Description:** When `true`, `validate_file()` rejects paths whose resolved location lies outside `input/`. Use this to block symlink escapes from a shared inbox. Leave `false` for the usual single-user layout and for tools that pass arbitrary paths (for example tests).
+- **Description:** When `true`, `validate_file()` rejects paths whose resolved location lies outside `input/`. Enable this to block symlink escapes from a shared inbox; leave it disabled for programmatic callers that intentionally pass arbitrary paths.
 
 ```ini
 STRICT_INPUT_PATH_RESOLUTION=false
 ```
 
+### CLEANUP_UPLOAD_ALL_CONFIRM
+
+- **Type:** Boolean
+- **Default:** `false`
+- **Description:** When `CLEANUP_UPLOAD_SCOPE=all`, maintenance requires interactive confirmation or this flag set to `true` before deleting account-wide Files API objects.
+
+```ini
+CLEANUP_UPLOAD_ALL_CONFIRM=false
+```
+
+### ENABLE_RETRIES
+
+- **Type:** Boolean
+- **Default:** derived from `MAX_RETRIES != 0`
+- **Description:** Explicit retry enable flag. `MAX_RETRIES` remains an on/off gate (not a max-attempt count); backoff is bounded by `RETRY_MAX_ELAPSED_TIME_MS`.
+
+```ini
+ENABLE_RETRIES=true
+```
+
 ### Maintainer note: upgrading `mistralai` or `markitdown`
 
-After bumping the `mistralai` or `markitdown` package version, compare OCR, Document QnA, and batch request bodies against upstream release notes and run the full test suite. Batch JSONL fields are kept in sync with synchronous OCR options in code; API changes may require updates in `mistral_converter.py`.
+After bumping the `mistralai` or `markitdown` package version, compare OCR, Document QnA, and batch request bodies against upstream release notes and run the full test suite. Batch JSONL fields are kept in sync with synchronous OCR options in code; API changes may require updates in the `mistral_converter` package.
 
 ---
 
@@ -1153,6 +1183,9 @@ VERBOSE_PROGRESS=true
 | MISTRAL_IMAGE_QUALITY_THRESHOLD    | int    | 70                   | No                                                                    | Image Processing  |
 | PDF_IMAGE_FORMAT                   | string | png                  | No                                                                    | PDF to Image      |
 | PDF_IMAGE_DPI                      | int    | 200                  | No                                                                    | PDF to Image      |
+| PDF_IMAGE_MAX_PAGES                | int    | 100                  | No                                                                    | PDF to Image      |
+| CLEANUP_UPLOAD_ALL_CONFIRM         | bool   | false                | No                                                                    | Maintenance       |
+| ENABLE_RETRIES                     | bool   | derived              | No                                                                    | Retry             |
 | PDF_IMAGE_THREAD_COUNT             | int    | 4                    | No                                                                    | PDF to Image      |
 | PDF_IMAGE_USE_PDFTOCAIRO           | bool   | true                 | No                                                                    | PDF to Image      |
 | POPPLER_PATH                       | string | ""                   | No                                                                    | System Paths      |
