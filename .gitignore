@@ -37,6 +37,9 @@ docs/_build/
 # Only ignore local env files
 .env.mcp.local
 
+# Personal Cursor setup notes (not team docs)
+cursor-settings-recommendations.md
+
 # Claude Code — local/personal; do not commit
 .claude/
 CLAUDE.md
