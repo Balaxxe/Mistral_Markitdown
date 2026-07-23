@@ -67,3 +67,14 @@ Makefile text eol=lf
 *.tar binary
 *.gz binary
 *.7z binary
+
+# Cursor config and hook files (LF required; prevents CRLF-induced hook
+# failures on Windows and keeps hooks byte-identical across machines)
+.cursor/hooks/*.js text eol=lf
+.cursor/hooks.json text eol=lf
+.cursor/rules/*.mdc text eol=lf
+.cursor/skills/**/*.md text eol=lf
+.cursor/agents/*.md text eol=lf
+.cursor/environment.json text eol=lf
+.cursorignore text eol=lf
+.cursorindexingignore text eol=lf

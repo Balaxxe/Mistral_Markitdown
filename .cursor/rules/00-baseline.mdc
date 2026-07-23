@@ -13,5 +13,5 @@ alwaysApply: true
 - Prefer root-cause fixes over superficial patches when the blast radius stays small and understandable.
 - After substantive edits, run the narrowest relevant validation or state exactly what remains unverified.
 - When a change requires coupled updates, make them in the same task: imports, types, tests, docs, generated artifacts, and config.
-- Do not edit files in `.cursor/hooks/`, `.cursor/agents/`, or `.cursor/commands/` unless the user explicitly asks to modify Cursor configuration.
+- Do not edit `.cursor/hooks.json`, or files in `.cursor/hooks/`, `.cursor/agents/`, `.cursor/skills/`, or `.cursor/rules/`, unless the user explicitly asks to modify Cursor configuration.
 - Do not invent results, passing checks, or commands that were not actually run.

@@ -1,5 +1,8 @@
 # Mistral Markitdown
 
+> **These instructions apply ONLY to the `Mistral_Markitdown` repository.** In a
+> multi-root workspace, ignore this file when working in any other repo.
+
 Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf2image
 
 ## Commands
@@ -23,13 +26,13 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 - `schemas.py` -- Pydantic data models and validation
 - `mistral_converter.py` -- Mistral AI OCR/QnA/Batch conversion
 - `local_converter.py` -- local MarkItDown-based conversion
+- `modes/` -- mode orchestration (`batch.py`, `qna.py`, `system.py`)
 - `utils.py` -- shared utilities
 - `scripts/` -- helper scripts (test runner, etc.)
 - `tests/` -- pytest test suite
 - `input/` -- drop files here for conversion (gitignored)
 - `output_md/`, `output_txt/`, `output_images/` -- conversion output (gitignored)
 - `cache/` -- runtime cache (gitignored)
-- `docs/` -- documentation
 
 ## Rules
 
@@ -62,6 +65,12 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 - flake8 config is in `.flake8` (120 char line length, black-compatible ignores). pytest config is in `pyproject.toml`.
 - Black is configured with `line-length = 120` and isort uses `profile = "black"` — both in `pyproject.toml`.
 
+## Cursor config
+
+- Slash skills live in `.cursor/skills/`: `/explain`, `/review`, `/pr-description`, `/test-plan`, `/refactor-plan`, `/migration-plan`.
+- Hooks (`.cursor/hooks.json`, Node scripts in `.cursor/hooks/`): a destructive-command shell guard, black+isort auto-format after agent edits, and a scoped pytest run when the agent stops.
+- Do not edit `.cursor/hooks*`, `.cursor/agents/`, `.cursor/skills/`, or `.cursor/rules/` unless the user explicitly asks for Cursor config changes.
+
 ## Subagents
 
 Three custom subagents are defined in `.cursor/agents/`:
@@ -77,8 +86,13 @@ Three custom subagents are defined in `.cursor/agents/`:
 - Tests mock API calls — they work without a Mistral key.
 - Lint: `python3 -m flake8 .` | Format: `python3 -m black . && python3 -m isort .`
 - Test: `python3 -m pytest tests/test_<name>.py -v` (scoped) or `python3 -m pytest tests/` (full)
+- Subagents must not commit, push, publish, or run destructive operations.
 
-The subagent gate hook (`.cursor/hooks/subagent-gate.sh`) restricts spawning to the three named subagents plus built-in types (explore, bash). Unrecognized agents are denied.
+## Cloud agents
+
+- The VM is defined by `.cursor/environment.json` (`install` sets up poppler, ghostscript, and Python deps; Cursor snapshots the VM after it succeeds).
+- `MISTRAL_API_KEY` comes from the Cursor dashboard Secrets tab as an environment variable. Never expect a committed `.env` in cloud runs — and tests don't need the key.
+- Project hooks run in cloud agents (command hooks only). User-level hooks do not exist there.
 
 ## PRs
 

@@ -3,21 +3,22 @@
   "hooks": {
     "beforeShellExecution": [
       {
-        "command": "bash .cursor/hooks/before-shell-guard.sh",
-        "timeout": 5,
+        "command": "node .cursor/hooks/shell-guard.js",
+        "matcher": "\\b[rR][mM]\\s+-|\\b[dD][eE][lL]\\s|\\b[eE][rR][aA][sS][eE]\\s|\\b[rR][mM][dD][iI][rR]\\b|\\b[rR][dD]\\s|[rR][eE][mM][oO][vV][eE]-[iI][tT][eE][mM]|[fF][iI][nN][dD]\\s+.*-[dD][eE][lL][eE][tT][eE]|\\b[mM][kK][fF][sS]|\\b[dD][dD]\\s|\\b[dD][iI][sS][kK][pP][aA][rR][tT]\\b|\\b[fF][oO][rR][mM][aA][tT]\\s+[a-zA-Z]:|\\b[gG][iI][tT]\\s+([pP][uU][sS][hH]|[rR][eE][sS][eE][tT]|[cC][lL][eE][aA][nN]|[cC][hH][eE][cC][kK][oO][uU][tT]|[bB][rR][aA][nN][cC][hH]|[sS][tT][aA][sS][hH])|[dD][rR][oO][pP]\\s+([tT][aA][bB][lL][eE]|[dD][aA][tT][aA][bB][aA][sS][eE]|[sS][cC][hH][eE][mM][aA]|[iI][nN][dD][eE][xX])|[tT][rR][uU][nN][cC][aA][tT][eE]\\s|[dD][eE][lL][eE][tT][eE]\\s+[fF][rR][oO][mM]|[tT][eE][rR][rR][aA][fF][oO][rR][mM]|\\b[tT][oO][fF][uU]\\s|[dD][oO][cC][kK][eE][rR]\\s+([sS][yY][sS][tT][eE][mM]|[vV][oO][lL][uU][mM][eE])\\s+[pP][rR][uU][nN][eE]|[kK][uU][bB][eE][cC][tT][lL]\\s+[dD][eE][lL][eE][tT][eE]|[hH][eE][lL][mM]\\s+([uU][nN][iI][nN][sS][tT][aA][lL][lL]|[dD][eE][lL][eE][tT][eE])|\\|\\s*([bB][aA][sS][hH]|[sS][hH]|[zZ][sS][hH]|[pP][wW][sS][hH]|[pP][oO][wW][eE][rR][sS][hH][eE][lL][lL]|[iI][eE][xX])\\b|[iI][nN][vV][oO][kK][eE]-|\\b[iI][eE][xX]\\b|[sS][hH][uU][tT][dD][oO][wW][nN]|\\b[rR][eE][bB][oO][oO][tT]\\b|[pP][oO][wW][eE][rR][oO][fF][fF]|\\b[hH][aA][lL][tT]\\b|[rR][eE][gG]\\s+[dD][eE][lL][eE][tT][eE]|\\b[sS][eE][tT][xX]\\s|[sS][eE][tT]-[eE][xX][eE][cC][uU][tT][iI][oO][nN][pP][oO][lL][iI][cC][yY]|[sS][cC][hH][tT][aA][sS][kK][sS]|\\.([eE][nN][vV]|[pP][eE][mM]|[pP]12|[pP][fF][xX])\\b|\\.[kK][eE][yY]\\b|[iI][dD]_[rR][sS][aA]|[iI][dD]_[eE][dD]25519|\\b[tT][wW][iI][nN][eE]\\s|\\b[pP][uU][bB][lL][iI][sS][hH]\\b|\\b[uU][nN][iI][nN][sS][tT][aA][lL][lL]\\b",
+        "timeout": 10,
         "failClosed": true
       }
     ],
     "afterFileEdit": [
       {
-        "command": "bash .cursor/hooks/after-file-format.sh",
-        "timeout": 20
+        "command": "node .cursor/hooks/format-after-edit.js",
+        "timeout": 30
       }
     ],
     "stop": [
       {
-        "command": "bash .cursor/hooks/stop-scoped-tests.sh",
-        "timeout": 180,
+        "command": "node .cursor/hooks/stop-scoped-tests.js",
+        "timeout": 600,
         "loop_limit": 3
       }
     ]
