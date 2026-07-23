@@ -2659,6 +2659,7 @@ def query_document_stream(
     document_url: str,
     question: str,
     model: Optional[str] = None,
+    strict_dns: Optional[bool] = None,
 ) -> Tuple[bool, Optional[Any], Optional[str]]:
     """
     Query a document using Mistral's Document QnA with streaming response.
@@ -2670,11 +2671,12 @@ def query_document_stream(
         document_url: Public HTTPS URL to the document
         question: Natural language question about the document
         model: Optional model override (default: mistral-small-latest)
+        strict_dns: Override DNS fail-closed behavior (None uses config)
 
     Returns:
         Tuple of (success, event_stream_or_None, error_message)
     """
-    ok, client, params, err = _prepare_qna_call(document_url, question, model)
+    ok, client, params, err = _prepare_qna_call(document_url, question, model, strict_dns=strict_dns)
     if not ok or client is None or params is None:
         return False, None, err
 

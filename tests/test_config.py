@@ -284,6 +284,13 @@ class TestValidateConfigurationBranches:
         issues = config.validate_configuration()
         assert any("LOG_LEVEL" in i and "invalid" in i for i in issues)
 
+    def test_invalid_cleanup_upload_scope_when_monkeypatched(self, monkeypatch):
+        """Defensive validate_configuration path for monkeypatched invalid scope."""
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "key")
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "everywhere")
+        issues = config.validate_configuration()
+        assert any("CLEANUP_UPLOAD_SCOPE" in i and "invalid" in i for i in issues)
+
     def test_invalid_schema_type(self, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "key")
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_SCHEMA_TYPE", "custom_invalid")

@@ -297,6 +297,36 @@ class TestQueryDocumentStreamFull:
         assert ok is False
         assert "stream error" in err.lower()
 
+    def test_stream_strict_dns_false_allows_unresolvable_signed_url(self, monkeypatch):
+        """Signed-URL callers can bypass fail-closed DNS like query_document_file."""
+        import socket
+
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_QNA_MODEL", "mistral-small-latest")
+        monkeypatch.setattr(config, "MISTRAL_QNA_SYSTEM_PROMPT", "")
+        monkeypatch.setattr(config, "MISTRAL_QNA_DOCUMENT_IMAGE_LIMIT", 0)
+        monkeypatch.setattr(config, "MISTRAL_QNA_DOCUMENT_PAGE_LIMIT", 0)
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_URL_STRICT_DNS", True)
+
+        mock_stream = MagicMock()
+        mock_client = MagicMock()
+        mock_client.chat.stream.return_value = mock_stream
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            with patch.object(mistral_converter, "get_retry_config", return_value=None):
+                with patch(
+                    "socket.getaddrinfo",
+                    side_effect=socket.gaierror(8, "nodename nor servname"),
+                ):
+                    ok, stream, err = mistral_converter.query_document_stream(
+                        "https://signed.example/doc.pdf",
+                        "What?",
+                        strict_dns=False,
+                    )
+
+        assert ok is True
+        assert stream is mock_stream
+        assert err is None
+
 
 # ============================================================================
 # query_document_file - additional paths
