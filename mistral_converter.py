@@ -1906,6 +1906,9 @@ def _run_weak_page_improvements(
                     merged_page["page_number"] = original_page["page_number"]
                 if "api_page_index" not in merged_page and "api_page_index" in original_page:
                     merged_page["api_page_index"] = original_page["api_page_index"]
+                # Re-OCR may omit images; keep originals so inline assets are not dropped.
+                if not merged_page.get("images") and original_page.get("images"):
+                    merged_page["images"] = list(original_page["images"])
                 ocr_result["pages"][page_idx] = merged_page
 
 

@@ -2509,6 +2509,28 @@ class TestImproveWeakPages:
 
         assert result["pages"][0]["text"] == weak_text
 
+    def test_weak_page_merge_preserves_original_images(self, monkeypatch):
+        """Improved pages without images must not drop original inline assets."""
+        monkeypatch.setattr(config, "OCR_MAX_WEAK_PAGE_WORKERS", 1)
+        original_images = [{"id": "img-1", "image_base64": "abc"}]
+        ocr_result = {
+            "pages": [
+                {
+                    "text": "short",
+                    "page_number": 1,
+                    "api_page_index": 0,
+                    "images": original_images,
+                }
+            ]
+        }
+
+        def _improve(idx):
+            return idx, {"text": "much longer improved OCR text " * 10, "images": []}
+
+        mistral_converter._run_weak_page_improvements([0], _improve, ocr_result)
+        assert ocr_result["pages"][0]["images"] == original_images
+        assert "much longer improved" in ocr_result["pages"][0]["text"]
+
     def test_url_upload_failure(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
