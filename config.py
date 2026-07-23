@@ -216,6 +216,8 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 # Optional Mistral API base URL (private deployment, Azure-compatible shape, etc.).
 # Empty = SDK default (https://api.mistral.ai). No trailing slash required.
 MISTRAL_SERVER_URL = os.getenv("MISTRAL_SERVER_URL", "").strip().rstrip("/")
+# Allow http:// MISTRAL_SERVER_URL (insecure). Default false — prefer https://.
+ALLOW_INSECURE_MISTRAL_SERVER = _safe_bool("ALLOW_INSECURE_MISTRAL_SERVER", False)
 
 # NOTE: Azure Document Intelligence and OpenAI API keys have been removed.
 # LLM image descriptions now use Mistral's OpenAI-compatible endpoint
@@ -243,6 +245,17 @@ MISTRAL_BATCH_MIN_FILES = _safe_int("MISTRAL_BATCH_MIN_FILES", 10, min_val=1)
 # File upload management
 CLEANUP_OLD_UPLOADS = _safe_bool("CLEANUP_OLD_UPLOADS", True)
 UPLOAD_RETENTION_DAYS = _safe_int("UPLOAD_RETENTION_DAYS", 7, min_val=1)
+# Cleanup scope: "registry" deletes only locally tracked uploads; "all" is account-wide.
+_raw_cleanup_upload_scope = os.getenv("CLEANUP_UPLOAD_SCOPE", "registry").strip().lower()
+if _raw_cleanup_upload_scope in {"registry", "all"}:
+    CLEANUP_UPLOAD_SCOPE = _raw_cleanup_upload_scope
+else:
+    if os.getenv("CLEANUP_UPLOAD_SCOPE", "").strip():
+        logging.getLogger("document_converter").warning(
+            "Invalid CLEANUP_UPLOAD_SCOPE=%r, using default 'registry'",
+            os.getenv("CLEANUP_UPLOAD_SCOPE"),
+        )
+    CLEANUP_UPLOAD_SCOPE = "registry"
 
 # OCR Quality Assessment Thresholds (0-100 scale)
 OCR_QUALITY_THRESHOLD_EXCELLENT = _safe_int("OCR_QUALITY_THRESHOLD_EXCELLENT", 80)
@@ -298,6 +311,12 @@ MISTRAL_IMAGE_MIN_SIZE = _safe_int("MISTRAL_IMAGE_MIN_SIZE", 0)
 
 # File size limit for Mistral OCR uploads (MB) - reject files exceeding this
 MISTRAL_OCR_MAX_FILE_SIZE_MB = _safe_int("MISTRAL_OCR_MAX_FILE_SIZE_MB", 200, min_val=1)
+
+# Conservative page-budget estimate for Office/other non-PDF OCR uploads (min 1)
+OCR_OFFICE_PAGE_ESTIMATE_DEFAULT = _safe_int("OCR_OFFICE_PAGE_ESTIMATE_DEFAULT", 32, min_val=1)
+
+# When true, classify_document_type may call a cheap LLM as a fallback
+MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION = _safe_bool("MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION", False)
 
 # Increment when Mistral OCR cache metadata schema changes (invalidates old ``mistral_ocr`` entries).
 MISTRAL_OCR_CACHE_CONTRACT_VERSION = 1
@@ -404,7 +423,7 @@ MISTRAL_QNA_DOCUMENT_IMAGE_LIMIT = _safe_int("MISTRAL_QNA_DOCUMENT_IMAGE_LIMIT",
 MISTRAL_QNA_DOCUMENT_PAGE_LIMIT = _safe_int("MISTRAL_QNA_DOCUMENT_PAGE_LIMIT", 0)  # 0 = API default (64)
 MISTRAL_QNA_MAX_FILE_SIZE_MB = _safe_int("MISTRAL_QNA_MAX_FILE_SIZE_MB", 50, min_val=1)
 # When true, QnA document URLs must pass local DNS resolution (fail closed on lookup/timeout errors)
-MISTRAL_DOCUMENT_URL_STRICT_DNS = _safe_bool("MISTRAL_DOCUMENT_URL_STRICT_DNS", False)
+MISTRAL_DOCUMENT_URL_STRICT_DNS = _safe_bool("MISTRAL_DOCUMENT_URL_STRICT_DNS", True)
 MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS = _safe_int("MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS", 5, min_val=1)
 
 # Batch processing advanced configuration
@@ -435,9 +454,11 @@ RETRY_CONNECTION_ERRORS = _safe_bool("RETRY_CONNECTION_ERRORS", True)
 
 GENERATE_TXT_OUTPUT = _safe_bool("GENERATE_TXT_OUTPUT", False)
 INCLUDE_METADATA = _safe_bool("INCLUDE_METADATA", True)
-TABLE_OUTPUT_FORMATS = _safe_csv("TABLE_OUTPUT_FORMATS", "")
-# Reserved for future batch job metadata files; no code path writes them yet (``.env`` compat only).
+TABLE_OUTPUT_FORMATS = _safe_csv("TABLE_OUTPUT_FORMATS", "markdown")
+# When true, write local batch job metadata JSON under METADATA_DIR after submit.
 ENABLE_BATCH_METADATA = _safe_bool("ENABLE_BATCH_METADATA", True)
+# When true, unknown schema/model type names raise ValueError instead of falling back.
+SCHEMA_STRICT_UNKNOWN_TYPES = _safe_bool("SCHEMA_STRICT_UNKNOWN_TYPES", False)
 
 # ============================================================================
 # Mistral Model Configuration
@@ -659,12 +680,25 @@ def validate_configuration() -> List[str]:
             "Supported values: ['csv', 'markdown']."
         )
 
+    # Validate CLEANUP_UPLOAD_SCOPE
+    if CLEANUP_UPLOAD_SCOPE not in {"registry", "all"}:
+        issues.append(
+            f"WARNING: CLEANUP_UPLOAD_SCOPE={CLEANUP_UPLOAD_SCOPE!r} is invalid. "
+            "Use 'registry' or 'all'."
+        )
+
     # Validate MISTRAL_SERVER_URL
     if MISTRAL_SERVER_URL:
         if not MISTRAL_SERVER_URL.startswith(("https://", "http://")):
             issues.append(
                 f"WARNING: MISTRAL_SERVER_URL={MISTRAL_SERVER_URL!r} does not start with "
                 "https:// or http://. API calls may fail."
+            )
+        elif MISTRAL_SERVER_URL.startswith("http://") and not ALLOW_INSECURE_MISTRAL_SERVER:
+            issues.append(
+                "WARNING: MISTRAL_SERVER_URL uses insecure http://. "
+                "Set ALLOW_INSECURE_MISTRAL_SERVER=true to allow, or use https://. "
+                "Client initialization will reject this URL."
             )
 
     # Validate PDF_IMAGE_FORMAT

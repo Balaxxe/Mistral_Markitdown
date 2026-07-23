@@ -2,8 +2,7 @@
 
 Implements ``mode_batch_ocr`` (menu option 6, ``--mode batch_ocr``) plus its
 four sub-actions: submit, status, list, download. Interactive file selection
-delegates back to :mod:`main` via lazy imports so this module has no static
-dependency on the CLI entry point.
+uses :mod:`cli_files` so this module has no dependency on the CLI entry point.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import cli_files
 import config
 import mistral_converter
 import utils
@@ -39,14 +39,10 @@ def _batch_submit(file_paths: List[Path], *, non_interactive: bool) -> Tuple[boo
                 False,
                 "Batch submit requires files in input/ (use interactive mode to pick files).",
             )
-        # Lazy import to avoid a hard dependency between the modes package and
-        # the CLI entry point. main imports this module at startup.
-        import main as _main
-
-        picked = _main.select_files()
+        picked = cli_files.select_files()
         if not picked:
             return False, "No files selected"
-        submit_paths = _main._filter_valid_files(picked, mode="batch_ocr")
+        submit_paths = cli_files.filter_valid_files(picked, mode="batch_ocr")
         if not submit_paths:
             return False, "No valid files to process for batch OCR."
 

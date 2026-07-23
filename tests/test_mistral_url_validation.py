@@ -196,26 +196,26 @@ class TestValidateDocumentUrlSSRFEdges:
         assert valid is False
         assert "private" in err.lower() or "internal" in err.lower()
 
-    def test_dns_resolution_other_exception(self):
-        """Lines 1697-1698: non-gaierror DNS exception."""
+    def test_dns_resolution_other_exception(self, monkeypatch):
+        """Non-gaierror DNS exception: lenient mode defers to upstream."""
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_URL_STRICT_DNS", False)
         with patch(
             "socket.getaddrinfo",
             side_effect=OSError("DNS service unavailable"),
         ):
             valid, err = mistral_converter._validate_document_url("https://example.com/doc.pdf")
-        # Should pass validation (defers to upstream)
         assert valid is True
 
-    def test_dns_gaierror(self):
-        """Lines 1739-1742: socket.gaierror during resolution."""
+    def test_dns_gaierror(self, monkeypatch):
+        """socket.gaierror during resolution: lenient mode defers to upstream."""
         import socket
 
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_URL_STRICT_DNS", False)
         with patch(
             "socket.getaddrinfo",
             side_effect=socket.gaierror("Name resolution failed"),
         ):
             valid, err = mistral_converter._validate_document_url("https://example.com/doc.pdf")
-        # Should pass validation (defers to upstream)
         assert valid is True
 
 
@@ -228,9 +228,10 @@ class TestQueryDocumentDNS:
     """Lines 1739-1742: query_document DNS resolution paths."""
 
     def test_dns_gaierror_still_proceeds(self, monkeypatch):
-        """DNS resolution fails -> defers to Mistral."""
+        """DNS resolution fails -> defers to Mistral when strict DNS is off."""
         import socket
 
+        monkeypatch.setattr(config, "MISTRAL_DOCUMENT_URL_STRICT_DNS", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_QNA_MODEL", "mistral-small-latest")
         monkeypatch.setattr(config, "MISTRAL_QNA_SYSTEM_PROMPT", "")
         monkeypatch.setattr(config, "MISTRAL_QNA_DOCUMENT_IMAGE_LIMIT", 0)
@@ -365,9 +366,13 @@ class TestIsSignedUrlExpiryError:
 
     def test_signed_url_expiry_detected(self):
         assert mistral_converter.is_signed_url_expiry_error("The signed URL has expired") is True
-        assert mistral_converter.is_signed_url_expiry_error("403 Forbidden") is True
+        assert mistral_converter.is_signed_url_expiry_error("403 Forbidden") is False
+        assert (
+            mistral_converter.is_signed_url_expiry_error("403 Forbidden: signed URL has expired") is True
+        )
         assert mistral_converter.is_signed_url_expiry_error("Failed to fetch document from URL") is True
         assert mistral_converter.is_signed_url_expiry_error("Signature mismatch") is True
+        assert mistral_converter.is_signed_url_expiry_error("Access denied") is False
 
     def test_auth_hint_overrides_expiry_hint(self):
         # Permanent auth hints must win over expiry hints if both appear.

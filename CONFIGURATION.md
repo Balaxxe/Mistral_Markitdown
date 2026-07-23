@@ -455,11 +455,22 @@ success, job_id, _ = submit_batch_ocr_job(batch_file)
 
 - **Type:** Boolean
 - **Default:** `true`
-- **Description:** Automatically delete old uploads from Mistral API
+- **Description:** Automatically delete old uploads from Mistral API during maintenance
 - **Benefit:** Prevents unnecessary storage costs
 
 ```ini
 CLEANUP_OLD_UPLOADS=true
+```
+
+### CLEANUP_UPLOAD_SCOPE
+
+- **Type:** String
+- **Default:** `registry`
+- **Options:** `registry`, `all`
+- **Description:** `registry` deletes only file IDs recorded by this app (safe for shared API keys). `all` deletes every account OCR/batch file older than retention (destructive when keys are shared).
+
+```ini
+CLEANUP_UPLOAD_SCOPE=registry
 ```
 
 ### UPLOAD_RETENTION_DAYS
@@ -739,7 +750,7 @@ MAX_PAGES_PER_SESSION=1000
 
 - **Type:** Integer
 - **Default:** `3`
-- **Description:** Passed into the Mistral SDK retry/backoff configuration (not a simple fixed “N attempts” counter in all cases). Set to `0` to disable retries.
+- **Description:** Set to `0` to disable retries. Any positive value enables SDK exponential backoff. The SDK does not honor a fixed attempt count; elapsed time is bounded by `RETRY_MAX_ELAPSED_TIME_MS`.
 
 ```ini
 MAX_RETRIES=3
@@ -822,18 +833,18 @@ INCLUDE_METADATA=true
 ### TABLE_OUTPUT_FORMATS
 
 - **Type:** Comma-separated string
-- **Default:** `"markdown,csv"`
-- **Options:** `markdown`, `csv`
+- **Default:** `"markdown"`
+- **Options:** `markdown`, `csv` (combine as `markdown,csv`)
 
 ```ini
-TABLE_OUTPUT_FORMATS="markdown,csv"
+TABLE_OUTPUT_FORMATS="markdown"
 ```
 
 ### ENABLE_BATCH_METADATA
 
 - **Type:** Boolean
 - **Default:** `true`
-- **Description:** Reserved for future batch job metadata files; **no code path writes output yet** (kept for `.env` compatibility).
+- **Description:** When true, writes `logs/metadata/batch_job_<id>.json` after a successful batch OCR submit.
 
 ```ini
 ENABLE_BATCH_METADATA=true
@@ -1125,7 +1136,12 @@ VERBOSE_PROGRESS=true
 | MISTRAL_BATCH_TIMEOUT_HOURS        | int    | 24                   | No                                                                    | Batch OCR         |
 | MISTRAL_BATCH_STRICT               | bool   | false                | No                                                                    | Batch OCR         |
 | CLEANUP_OLD_UPLOADS                | bool   | true                 | No                                                                    | File Management   |
+| CLEANUP_UPLOAD_SCOPE               | string | registry             | No                                                                    | File Management   |
 | UPLOAD_RETENTION_DAYS              | int    | 7                    | No                                                                    | File Management   |
+| MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION | bool | false              | No                                                                    | Structured Data   |
+| OCR_OFFICE_PAGE_ESTIMATE_DEFAULT   | int    | 32                   | No                                                                    | Cost Guardrails   |
+| ALLOW_INSECURE_MISTRAL_SERVER      | bool   | false                | No                                                                    | Security          |
+| SCHEMA_STRICT_UNKNOWN_TYPES        | bool   | false                | No                                                                    | Structured Data   |
 | MISTRAL_ENABLE_STRUCTURED_OUTPUT   | bool   | true                 | No                                                                    | Structured Data   |
 | MISTRAL_DOCUMENT_SCHEMA_TYPE       | string | auto                 | No                                                                    | Structured Data   |
 | MISTRAL_ENABLE_BBOX_ANNOTATION     | bool   | false                | No                                                                    | Structured Data   |
@@ -1155,8 +1171,8 @@ VERBOSE_PROGRESS=true
 | RETRY_CONNECTION_ERRORS            | bool   | true                 | No                                                                    | Retry             |
 | GENERATE_TXT_OUTPUT                | bool   | true                 | No                                                                    | Output            |
 | INCLUDE_METADATA                   | bool   | true                 | No                                                                    | Output            |
-| TABLE_OUTPUT_FORMATS               | string | markdown,csv         | No                                                                    | Output            |
-| ENABLE_BATCH_METADATA              | bool   | true                 | No                                                                    | Output (reserved) |
+| TABLE_OUTPUT_FORMATS               | string | markdown             | No                                                                    | Output            |
+| ENABLE_BATCH_METADATA              | bool   | true                 | No                                                                    | Output            |
 | MARKITDOWN_ENABLE_BUILTINS         | bool   | true                 | No                                                                    | MarkItDown        |
 | MARKITDOWN_KEEP_DATA_URIS          | bool   | false                | No                                                                    | MarkItDown        |
 | MARKITDOWN_ENABLE_LLM_DESCRIPTIONS | bool   | false                | No                                                                    | MarkItDown        |

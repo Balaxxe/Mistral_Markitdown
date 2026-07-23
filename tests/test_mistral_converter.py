@@ -12,6 +12,8 @@ Tests cover:
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import config
 
 # Initialize config dirs so imports work
@@ -931,6 +933,10 @@ class TestPreprocessImage:
 
 class TestCleanupUploadedFiles:
     """Test file cleanup."""
+
+    @pytest.fixture(autouse=True)
+    def _account_wide_cleanup_scope(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
 
     def test_deletes_old_files(self, monkeypatch):
         monkeypatch.setattr(config, "UPLOAD_RETENTION_DAYS", 7)
@@ -1960,6 +1966,10 @@ class TestPreprocessImageFull:
 class TestCleanupUploadedFilesFull:
     """Test file cleanup with pagination, date parsing, and error handling."""
 
+    @pytest.fixture(autouse=True)
+    def _account_wide_cleanup_scope(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
+
     def test_deletes_old_files(self):
         from datetime import datetime, timedelta, timezone
 
@@ -2930,6 +2940,10 @@ class TestPreprocessImageFormatBranches:
 class TestCleanupUploadedFilesEdgeCases:
     """Cover remaining cleanup edge cases."""
 
+    @pytest.fixture(autouse=True)
+    def _account_wide_cleanup_scope(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
+
     def test_default_days_old(self, monkeypatch):
         """Line 513: days_old defaults to config.UPLOAD_RETENTION_DAYS."""
         monkeypatch.setattr(config, "UPLOAD_RETENTION_DAYS", 7)
@@ -3709,6 +3723,10 @@ class TestExtractResponseMetadataDict:
 class TestCleanupFileNoCreatedAt:
     """Line 540: file object without created_at attribute."""
 
+    @pytest.fixture(autouse=True)
+    def _account_wide_cleanup_scope(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
+
     def test_file_missing_created_at(self):
         from types import SimpleNamespace
 
@@ -3728,6 +3746,10 @@ class TestCleanupFileNoCreatedAt:
 
 class TestCleanupPaginationNoTotal:
     """Lines 563-565: second pagination check when total is absent."""
+
+    @pytest.fixture(autouse=True)
+    def _account_wide_cleanup_scope(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
 
     def test_pagination_no_total_attribute(self):
         from datetime import datetime, timedelta, timezone
@@ -3799,12 +3821,68 @@ class TestCleanupPaginationNoTotal:
 class TestCleanupOuterException:
     """Lines 577-579: outer exception handler."""
 
+    @pytest.fixture(autouse=True)
+    def _account_wide_cleanup_scope(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "all")
+
     def test_invalid_days_old_type(self):
         mock_client = MagicMock()
 
         # Pass a string that timedelta can't use -> outer except fires
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old="invalid")
         assert count == 0
+
+
+class TestCleanupUploadRegistry:
+    """Registry-scoped cleanup only deletes locally tracked uploads."""
+
+    def test_registry_scope_deletes_old_tracked_only(self, monkeypatch, tmp_path):
+        from datetime import datetime, timedelta, timezone
+
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+
+        old_iso = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        recent_iso = datetime.now(timezone.utc).isoformat()
+        mistral_converter._save_upload_registry(
+            [
+                {"id": "tracked_old", "purpose": "ocr", "created_at": old_iso},
+                {"id": "tracked_new", "purpose": "ocr", "created_at": recent_iso},
+            ]
+        )
+
+        mock_client = MagicMock()
+        count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=7)
+
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="tracked_old")
+        mock_client.files.list.assert_not_called()
+        remaining = mistral_converter._load_upload_registry()
+        assert [e["id"] for e in remaining] == ["tracked_new"]
+
+    def test_registry_scope_skips_remote_only_files(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        mistral_converter._save_upload_registry([])
+
+        mock_client = MagicMock()
+        count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=7)
+
+        assert count == 0
+        mock_client.files.delete.assert_not_called()
+        mock_client.files.list.assert_not_called()
+
+    def test_register_and_unregister_roundtrip(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        mistral_converter._register_uploaded_file("file_abc", "ocr")
+        entries = mistral_converter._load_upload_registry()
+        assert len(entries) == 1
+        assert entries[0]["id"] == "file_abc"
+        assert entries[0]["purpose"] == "ocr"
+        assert entries[0].get("created_at")
+
+        mistral_converter._unregister_uploaded_file("file_abc")
+        assert mistral_converter._load_upload_registry() == []
 
 
 class TestProcessWithOcr403Error:

@@ -76,20 +76,19 @@ olefile>=0.47
 # Note: MarkItDown uses 'mammoth' by default (auto-installed)
 # These are auto-installed with markitdown[docx] but listed for clarity
 
-# lxml>=4.9.0  # Already in requirements.txt
+# lxml / mammoth come via markitdown[all] (not pinned in requirements.txt)
 # mammoth>=1.8.0  # Auto-installed by MarkItDown
 
 # ----------------------------------------------------------------------------
 # Enhanced Excel Support
 # ----------------------------------------------------------------------------
-# Note: These are already in requirements.txt for our table extraction
-# Listed here for reference to MarkItDown extras mapping:
+# MarkItDown extras mapping (pulled in by markitdown[all], not our direct pins):
 # - markitdown[xlsx] → openpyxl, pandas
 # - markitdown[xls] → xlrd, pandas
 
-# pandas>=2.0.0  # Needed for both modern and legacy Excel
-# openpyxl>=3.1.0  # Already in requirements.txt
-# xlrd>=2.0.1  # Already in requirements.txt
+# pandas>=2.0.0
+# openpyxl>=3.1.0
+# xlrd>=2.0.1
 
 # ----------------------------------------------------------------------------
 # Enhanced PDF Processing
@@ -118,11 +117,12 @@ markitdown-ocr>=0.1.0
 # LLM Image Descriptions    | openai                         | MARKITDOWN_ENABLE_LLM_DESCRIPTIONS=true
 # Audio Transcription        | pydub, SpeechRecognition       | MARKITDOWN_ENABLE_PLUGINS=true
 # YouTube Transcription      | youtube-transcript-api         | MARKITDOWN_ENABLE_PLUGINS=true
-# Azure Document Intel       | azure-ai-*, azure-identity     | AZURE_DOC_INTEL_ENDPOINT/KEY
 # Outlook MSG Files          | olefile                        | (automatic)
 # MarkItDown OCR Plugin     | markitdown-ocr                 | MARKITDOWN_ENABLE_PLUGINS=true
-# Advanced DOCX             | lxml, mammoth                  | (automatic - in requirements.txt)
-# Excel (modern)            | openpyxl, pandas               | (automatic - in requirements.txt)
-# Excel (legacy)            | xlrd, pandas                   | (automatic - in requirements.txt)
-# Enhanced PDF              | pdfminer-six                   | (automatic - via MarkItDown)
+# Advanced DOCX             | lxml, mammoth                  | (via markitdown[all])
+# Excel (modern)            | openpyxl, pandas               | (via markitdown[all])
+# Excel (legacy)            | xlrd, pandas                   | (via markitdown[all])
+# Enhanced PDF              | pdfminer-six                   | (via MarkItDown)
+# NOTE: Azure Document Intelligence packages may appear above for experimentation
+# but are NOT wired into this application's conversion pipeline.
 # ============================================================================

@@ -29,6 +29,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as DnsTimeoutError
 from concurrent.futures import as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -131,19 +132,24 @@ def _http_client_exceptions() -> Tuple[type, ...]:
 # Tokens that strongly indicate a signed-URL has expired or is being rejected
 # by the object store (as opposed to Mistral API auth failing). Used by the
 # QnA retry path to decide whether it is worth re-uploading and retrying once.
-_SIGNED_URL_EXPIRY_HINTS: Tuple[str, ...] = (
+_SIGNED_URL_SPECIFIC_HINTS: Tuple[str, ...] = (
     "signed url",
     "url has expired",
     "url expired",
     "signature expired",
     "signature mismatch",
     "expired signature",
-    "access denied",
+)
+
+# Fetch/download failures are sufficient alone (object store could not serve the URL).
+_SIGNED_URL_FETCH_HINTS: Tuple[str, ...] = (
     "failed to fetch document",
     "could not download",
-    "403 forbidden",
-    "forbidden (403)",
 )
+
+# Note: bare "403 forbidden" / "access denied" are intentionally NOT always-true
+# hints. Those only become retryable when the message also contains a
+# signed-URL-specific hint above (e.g. "403 Forbidden: signed URL expired").
 
 # Tokens that mean the failure is permanent (API key / account) and retrying
 # with a new URL will not help.
@@ -160,19 +166,22 @@ def is_signed_url_expiry_error(message: Optional[str]) -> bool:
     """Classify a QnA/OCR error message as a likely signed-URL expiry.
 
     Returns True only for messages that look like the object store rejected
-    the signed URL (e.g. 403 from the URL host, "signed URL has expired").
-    Returns False for Mistral API auth failures or any non-matching text.
-
-    This replaces earlier substring heuristics that treated any occurrence of
-    "url" as retryable (which produced false positives on messages like
-    "Failed to resolve document URL").
+    the signed URL (e.g. "signed URL has expired", fetch/download failures).
+    Bare 403 / access-denied messages are retryable only when also paired with
+    a signed-URL-specific hint. Returns False for Mistral API auth failures.
     """
     if not message:
         return False
     lowered = message.lower()
     if any(hint in lowered for hint in _PERMANENT_AUTH_HINTS):
         return False
-    return any(hint in lowered for hint in _SIGNED_URL_EXPIRY_HINTS)
+    if any(hint in lowered for hint in _SIGNED_URL_FETCH_HINTS):
+        return True
+    has_signed_url_hint = any(hint in lowered for hint in _SIGNED_URL_SPECIFIC_HINTS)
+    if has_signed_url_hint:
+        return True
+    # Bare 403 / access-denied is not enough without a signed-URL-specific hint.
+    return False
 
 
 # ============================================================================
@@ -182,17 +191,91 @@ def is_signed_url_expiry_error(message: Optional[str]) -> bool:
 # This ensures .env settings are honored as documented in README.md
 # See: config.OCR_MIN_TEXT_LENGTH, config.OCR_MIN_UNIQUENESS_RATIO, etc.
 
-# Quality scoring point deductions — now configurable via config.py.
-# Kept as module-level aliases for internal use.
-_QUALITY_PENALTY_WEAK_PAGES_MAX = config.OCR_QUALITY_PENALTY_WEAK_PAGES_MAX
-_QUALITY_PENALTY_HIGH_REPETITION = config.OCR_QUALITY_PENALTY_HIGH_REPETITION
-
 # Process-global page counter — suitable for CLI use.  A multi-tenant
 # service would need per-request counters instead.
 _session_pages_processed = 0
 _session_pages_inflight = 0  # reserved estimate while OCR HTTP call is in flight
 _session_pages_warned = False
 _session_pages_lock = threading.Lock()
+
+# Local registry of files uploaded to Mistral (scoped cleanup default).
+_UPLOAD_REGISTRY_LOCK = threading.Lock()
+_UPLOAD_REGISTRY_FILENAME = "mistral_upload_registry.json"
+
+
+def _upload_registry_path() -> Path:
+    return config.CACHE_DIR / _UPLOAD_REGISTRY_FILENAME
+
+
+def _load_upload_registry() -> List[Dict[str, Any]]:
+    """Load the local upload registry; return [] if missing or corrupt."""
+    path = _upload_registry_path()
+    try:
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        return [e for e in data if isinstance(e, dict) and e.get("id")]
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+        logger.debug("Could not load upload registry: %s", e)
+        return []
+
+
+def _save_upload_registry(entries: List[Dict[str, Any]]) -> None:
+    """Persist the upload registry atomically."""
+    path = _upload_registry_path()
+    try:
+        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        utils.atomic_write_text(path, json.dumps(entries, indent=2))
+    except OSError as e:
+        logger.warning("Could not save upload registry: %s", e)
+
+
+def _register_uploaded_file(file_id: str, purpose: str) -> None:
+    """Record an uploaded file id in the local registry."""
+    if not file_id:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _UPLOAD_REGISTRY_LOCK:
+        entries = _load_upload_registry()
+        for entry in entries:
+            if entry.get("id") == file_id:
+                entry["purpose"] = purpose
+                if not entry.get("created_at"):
+                    entry["created_at"] = now
+                _save_upload_registry(entries)
+                return
+        entries.append({"id": file_id, "purpose": purpose, "created_at": now})
+        _save_upload_registry(entries)
+
+
+def _unregister_uploaded_file(file_id: str) -> None:
+    """Remove a file id from the local upload registry."""
+    if not file_id:
+        return
+    with _UPLOAD_REGISTRY_LOCK:
+        entries = _load_upload_registry()
+        new_entries = [e for e in entries if e.get("id") != file_id]
+        if len(new_entries) != len(entries):
+            _save_upload_registry(new_entries)
+
+
+def _parse_registry_created_at(value: Any) -> Optional[datetime]:
+    """Parse a registry created_at value into an aware UTC datetime."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            return None
+    return None
 
 
 def _estimate_session_pages_for_ocr(file_path: Path, pages: Optional[List[int]]) -> int:
@@ -224,7 +307,9 @@ def _estimate_session_pages_for_ocr(file_path: Path, pages: Optional[List[int]])
         cap = config.MAX_PAGES_PER_SESSION if config.MAX_PAGES_PER_SESSION > 0 else 256
         return max(1, min(cap, 256))
 
-    return 1
+    # Office / other non-image non-PDF: conservative estimate from config.
+    cap = config.MAX_PAGES_PER_SESSION if config.MAX_PAGES_PER_SESSION > 0 else 256
+    return max(1, min(cap, config.OCR_OFFICE_PAGE_ESTIMATE_DEFAULT))
 
 
 def _reserve_session_pages(estimated: int) -> bool:
@@ -372,6 +457,12 @@ def get_mistral_client() -> Optional[Mistral]:
             client_kwargs: Dict[str, Any] = {"api_key": config.MISTRAL_API_KEY}
 
             if config.MISTRAL_SERVER_URL:
+                if config.MISTRAL_SERVER_URL.startswith("http://") and not config.ALLOW_INSECURE_MISTRAL_SERVER:
+                    logger.error(
+                        "MISTRAL_SERVER_URL uses insecure http://. "
+                        "Set ALLOW_INSECURE_MISTRAL_SERVER=true to allow, or use https://."
+                    )
+                    return None
                 client_kwargs["server_url"] = config.MISTRAL_SERVER_URL
 
             # Set global retry config on client (applies to all calls by default)
@@ -431,8 +522,7 @@ def get_retry_config() -> Optional[Any]:
         )
 
         logger.debug(
-            "Retry config: %d attempts, %dms initial interval",
-            config.MAX_RETRIES,
+            "Retry config: retries enabled, %dms initial interval (bounded by RETRY_MAX_ELAPSED_TIME_MS)",
             config.RETRY_INITIAL_INTERVAL_MS,
         )
         return retry_config
@@ -725,6 +815,11 @@ def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> i
     """
     Clean up old files uploaded to Mistral Files API.
 
+    When ``CLEANUP_UPLOAD_SCOPE`` is ``"registry"`` (default), only file IDs
+    present in the local upload registry and older than *days_old* are deleted.
+    When ``"all"``, performs account-wide age-based cleanup for ``ocr`` and
+    ``batch`` purposes and prunes matching registry entries.
+
     Args:
         client: Mistral client instance
         days_old: Delete files older than N days (default: from config)
@@ -736,81 +831,24 @@ def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> i
         days_old = config.UPLOAD_RETENTION_DAYS
 
     try:
-        from datetime import datetime, timedelta, timezone
-
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
+        scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
 
-        def _cleanup_files_by_purpose(purpose: str) -> int:
-            """Delete files older than cutoff_date for a given purpose."""
-            deleted = 0
-            page = 0
-            page_size = 100
-
-            while True:
-                try:
-                    files_response = client.files.list(purpose=purpose, page=page, page_size=page_size)
-                    files_list = files_response.data if hasattr(files_response, "data") else files_response
-                except Exception as e:
-                    logger.debug(
-                        "Error listing %s files for cleanup (page %s): %s",
-                        purpose,
-                        page,
-                        e,
-                    )
-                    break
-
-                if not files_list:
-                    break
-
-                for file in files_list:
-                    try:
-                        if not hasattr(file, "created_at"):
-                            continue
-
-                        if isinstance(file.created_at, str):
-                            file_created = datetime.fromisoformat(file.created_at.replace("Z", "+00:00"))
-                        elif hasattr(file.created_at, "replace"):
-                            file_created = file.created_at
-                            if file_created.tzinfo is None:
-                                file_created = file_created.replace(tzinfo=timezone.utc)
-                        else:
-                            logger.debug(
-                                "Unexpected created_at type for file %s: %s",
-                                file.id,
-                                type(file.created_at),
-                            )
-                            continue
-
-                        if file_created < cutoff_date:
-                            client.files.delete(file_id=file.id)
-                            deleted += 1
-                            logger.debug(
-                                "Deleted old %s file: %s (created %s)",
-                                purpose,
-                                file.id,
-                                file_created,
-                            )
-                    except Exception as e:
-                        logger.debug("Error processing %s file %s: %s", purpose, file.id, e)
-                        continue
-
-                total = getattr(files_response, "total", None)
-                if isinstance(total, int) and total >= 0 and (page + 1) * page_size >= total:
-                    break
-                if len(files_list) < page_size:
-                    break
-                page += 1
-
-            return deleted
-
-        deleted = _cleanup_files_by_purpose("ocr")
-        deleted += _cleanup_files_by_purpose("batch")
+        if scope == "registry":
+            deleted = _cleanup_registry_scoped(client, cutoff_date)
+        else:
+            deleted_ids: List[str] = []
+            deleted = _cleanup_files_by_purpose(client, "ocr", cutoff_date, deleted_ids)
+            deleted += _cleanup_files_by_purpose(client, "batch", cutoff_date, deleted_ids)
+            for fid in deleted_ids:
+                _unregister_uploaded_file(fid)
 
         if deleted > 0:
             logger.info(
-                "Cleaned up %s old uploaded files (older than %s days)",
+                "Cleaned up %s old uploaded files (older than %s days, scope=%s)",
                 deleted,
                 days_old,
+                scope,
             )
 
         return deleted
@@ -820,11 +858,112 @@ def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> i
         return 0
 
 
+def _cleanup_registry_scoped(client: Mistral, cutoff_date: datetime) -> int:
+    """Delete only registry-tracked uploads older than *cutoff_date*."""
+    deleted = 0
+    with _UPLOAD_REGISTRY_LOCK:
+        entries = _load_upload_registry()
+        remaining: List[Dict[str, Any]] = []
+        for entry in entries:
+            file_id = entry.get("id")
+            if not file_id:
+                continue
+            file_created = _parse_registry_created_at(entry.get("created_at"))
+            if file_created is None or file_created >= cutoff_date:
+                remaining.append(entry)
+                continue
+            try:
+                client.files.delete(file_id=file_id)
+                deleted += 1
+                logger.debug(
+                    "Deleted registry-tracked %s file: %s (created %s)",
+                    entry.get("purpose", "unknown"),
+                    file_id,
+                    file_created,
+                )
+            except Exception as e:
+                logger.debug("Error deleting registry file %s: %s", file_id, e)
+                remaining.append(entry)
+        _save_upload_registry(remaining)
+    return deleted
+
+
+def _cleanup_files_by_purpose(
+    client: Mistral,
+    purpose: str,
+    cutoff_date: datetime,
+    deleted_ids: List[str],
+) -> int:
+    """Delete files older than cutoff_date for a given purpose (account-wide)."""
+    deleted = 0
+    page = 0
+    page_size = 100
+
+    while True:
+        try:
+            files_response = client.files.list(purpose=purpose, page=page, page_size=page_size)
+            files_list = files_response.data if hasattr(files_response, "data") else files_response
+        except Exception as e:
+            logger.debug(
+                "Error listing %s files for cleanup (page %s): %s",
+                purpose,
+                page,
+                e,
+            )
+            break
+
+        if not files_list:
+            break
+
+        for file in files_list:
+            try:
+                if not hasattr(file, "created_at"):
+                    continue
+
+                if isinstance(file.created_at, str):
+                    file_created = datetime.fromisoformat(file.created_at.replace("Z", "+00:00"))
+                elif hasattr(file.created_at, "replace"):
+                    file_created = file.created_at
+                    if file_created.tzinfo is None:
+                        file_created = file_created.replace(tzinfo=timezone.utc)
+                else:
+                    logger.debug(
+                        "Unexpected created_at type for file %s: %s",
+                        file.id,
+                        type(file.created_at),
+                    )
+                    continue
+
+                if file_created < cutoff_date:
+                    client.files.delete(file_id=file.id)
+                    deleted += 1
+                    deleted_ids.append(file.id)
+                    logger.debug(
+                        "Deleted old %s file: %s (created %s)",
+                        purpose,
+                        file.id,
+                        file_created,
+                    )
+            except Exception as e:
+                logger.debug("Error processing %s file %s: %s", purpose, file.id, e)
+                continue
+
+        total = getattr(files_response, "total", None)
+        if isinstance(total, int) and total >= 0 and (page + 1) * page_size >= total:
+            break
+        if len(files_list) < page_size:
+            break
+        page += 1
+
+    return deleted
+
+
 def _delete_ocr_file_ids(client: Mistral, file_ids: List[str]) -> None:
     """Best-effort delete for orphaned OCR uploads (e.g. failed batch assembly)."""
     for fid in file_ids:
         try:
             client.files.delete(file_id=fid)
+            _unregister_uploaded_file(fid)
         except Exception as e:
             logger.warning("Failed to delete uploaded file %s: %s", fid, e)
 
@@ -895,6 +1034,7 @@ def _upload_file_for_ocr_pair(
         url = getattr(signed_url_response, "url", None)
         if url:
             logger.debug("Got signed URL for file %s", file_id)
+            _register_uploaded_file(file_id, "ocr")
             return url, file_id
 
         logger.error("Failed to get signed URL for uploaded file")
@@ -1009,18 +1149,21 @@ def classify_document_type(file_path: Path) -> str:
         if any(w in first_text_lower for w in ["agreement", "contract", "parties", "hereby", "undersigned"]):
             logger.debug("Classified %s as 'contract' via page 1 text", file_path.name)
             return "contract"
-        if any(
-            w in first_text_lower
-            for w in ["statement of", "balance sheet", "cash flow", "income statement", "assets", "liabilities"]
-        ):
+        financial_signals = (
+            "balance sheet",
+            "cash flow",
+            "income statement",
+            "statement of",
+        )
+        if sum(1 for phrase in financial_signals if phrase in first_text_lower) >= 2:
             logger.debug("Classified %s as 'financial_statement' via page 1 text", file_path.name)
             return "financial_statement"
         if any(w in first_text_lower for w in ["form ", "w-9", "w-2", "tax return", "filer"]):
             logger.debug("Classified %s as 'form' via page 1 text", file_path.name)
             return "form"
 
-    # 3. LLM fallback check (if API key is present)
-    if config.MISTRAL_API_KEY:
+    # 3. LLM fallback check (opt-in; requires API key)
+    if config.MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION and config.MISTRAL_API_KEY:
         try:
             client = get_mistral_client()
             if client:
@@ -1697,14 +1840,14 @@ def assess_ocr_quality(ocr_result: Dict[str, Any]) -> Dict[str, Any]:
     # Deduct points for issues
     if assessment["weak_page_count"] > 0:
         weak_ratio = assessment["weak_page_count"] / max(1, assessment["total_page_count"])
-        points_lost = weak_ratio * _QUALITY_PENALTY_WEAK_PAGES_MAX
+        points_lost = weak_ratio * config.OCR_QUALITY_PENALTY_WEAK_PAGES_MAX
         assessment["quality_score"] -= points_lost
         assessment["issues"].append(
             f"{assessment['weak_page_count']}/{assessment['total_page_count']} pages are weak quality"
         )
 
     if assessment["uniqueness_ratio"] < config.OCR_MIN_UNIQUENESS_RATIO:
-        assessment["quality_score"] -= _QUALITY_PENALTY_HIGH_REPETITION
+        assessment["quality_score"] -= config.OCR_QUALITY_PENALTY_HIGH_REPETITION
         assessment["issues"].append(f"High repetition (uniqueness: {assessment['uniqueness_ratio']:.1%})")
 
     # Clamp score to [0, 100]
@@ -1753,11 +1896,17 @@ def _run_weak_page_improvements(
                 continue
             if improved_page is None:
                 continue
-            original_len = len(ocr_result["pages"][page_idx].get("text", ""))
+            original_page = ocr_result["pages"][page_idx]
+            original_len = len(original_page.get("text", ""))
             improved_len = len(improved_page.get("text", ""))
             if improved_len > original_len:
                 logger.info("Improved page %d", page_idx + 1)
-                ocr_result["pages"][page_idx]["text"] = improved_page.get("text", "")
+                merged_page = dict(improved_page)
+                if "page_number" not in merged_page and "page_number" in original_page:
+                    merged_page["page_number"] = original_page["page_number"]
+                if "api_page_index" not in merged_page and "api_page_index" in original_page:
+                    merged_page["api_page_index"] = original_page["api_page_index"]
+                ocr_result["pages"][page_idx] = merged_page
 
 
 def improve_weak_pages(client: Mistral, file_path: Path, ocr_result: Dict[str, Any], model: str) -> Dict[str, Any]:
@@ -2292,8 +2441,13 @@ def _validate_ip_str(ip_str: str, source: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-def _resolve_and_validate_dns(hostname: str) -> Tuple[bool, Optional[str]]:
+def _resolve_and_validate_dns(
+    hostname: str,
+    strict_dns: Optional[bool] = None,
+) -> Tuple[bool, Optional[str]]:
     """Resolve *hostname* via DNS and reject any private/internal addresses."""
+    if strict_dns is None:
+        strict_dns = config.MISTRAL_DOCUMENT_URL_STRICT_DNS
     try:
         _future = _dns_executor.submit(socket.getaddrinfo, hostname, None, proto=socket.IPPROTO_TCP)
         try:
@@ -2311,21 +2465,21 @@ def _resolve_and_validate_dns(hostname: str) -> Tuple[bool, Optional[str]]:
             if not ok:
                 return ok, err
     except socket.gaierror:
-        if config.MISTRAL_DOCUMENT_URL_STRICT_DNS:
+        if strict_dns:
             return (
                 False,
                 f"Could not resolve hostname in strict document URL mode: {hostname}",
             )
         logger.debug("Could not resolve hostname during SSRF validation: %s", hostname)
     except socket.timeout:
-        if config.MISTRAL_DOCUMENT_URL_STRICT_DNS:
+        if strict_dns:
             return (
                 False,
                 f"DNS resolution timed out in strict document URL mode: {hostname}",
             )
         logger.debug("DNS resolution timed out for %s", hostname)
     except (OSError, socket.error) as e:
-        if config.MISTRAL_DOCUMENT_URL_STRICT_DNS:
+        if strict_dns:
             return (
                 False,
                 f"DNS resolution check failed in strict document URL mode for {hostname}: {e}",
@@ -2335,7 +2489,10 @@ def _resolve_and_validate_dns(hostname: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-def _validate_document_url(url: str) -> Tuple[bool, Optional[str]]:
+def _validate_document_url(
+    url: str,
+    strict_dns: Optional[bool] = None,
+) -> Tuple[bool, Optional[str]]:
     """
     Validate a document URL to prevent SSRF attacks.
 
@@ -2344,6 +2501,8 @@ def _validate_document_url(url: str) -> Tuple[bool, Optional[str]]:
 
     Args:
         url: URL to validate
+        strict_dns: When True, DNS lookup failures reject the URL. When None,
+            uses ``config.MISTRAL_DOCUMENT_URL_STRICT_DNS``.
 
     Returns:
         Tuple of (is_valid, error_message)
@@ -2385,18 +2544,22 @@ def _validate_document_url(url: str) -> Tuple[bool, Optional[str]]:
     if not ok:
         return ok, err
 
-    return _resolve_and_validate_dns(hostname)
+    return _resolve_and_validate_dns(hostname, strict_dns=strict_dns)
 
 
-def validate_https_document_url(url: str) -> Tuple[bool, Optional[str]]:
+def validate_https_document_url(
+    url: str,
+    strict_dns: Optional[bool] = None,
+) -> Tuple[bool, Optional[str]]:
     """Public SSRF-safe HTTPS URL check for Document QnA."""
-    return _validate_document_url(url)
+    return _validate_document_url(url, strict_dns=strict_dns)
 
 
 def _prepare_qna_call(
     document_url: str,
     question: str,
     model: Optional[str],
+    strict_dns: Optional[bool] = None,
 ) -> Tuple[bool, Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
     """Shared setup for QnA calls: validate URL, resolve model, build params.
 
@@ -2407,7 +2570,7 @@ def _prepare_qna_call(
     if client is None:
         return False, None, None, "Mistral client not available"
 
-    url_valid, url_error = _validate_document_url(document_url)
+    url_valid, url_error = _validate_document_url(document_url, strict_dns=strict_dns)
     if not url_valid:
         return False, None, None, f"Invalid document URL: {url_error}"
 
@@ -2437,6 +2600,7 @@ def query_document(
     document_url: str,
     question: str,
     model: Optional[str] = None,
+    strict_dns: Optional[bool] = None,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Query a document using Mistral's Document QnA capability.
@@ -2449,6 +2613,7 @@ def query_document(
         document_url: Public HTTPS URL to the document (PDF, image, etc.)
         question: Natural language question about the document
         model: Optional model override (default: mistral-small-latest)
+        strict_dns: Override DNS fail-closed behavior (None uses config)
 
     Returns:
         Tuple of (success, answer, error_message)
@@ -2464,7 +2629,7 @@ def query_document(
     Documentation:
         https://docs.mistral.ai/capabilities/document_ai/document_qna
     """
-    ok, client, params, err = _prepare_qna_call(document_url, question, model)
+    ok, client, params, err = _prepare_qna_call(document_url, question, model, strict_dns=strict_dns)
     if not ok or client is None or params is None:
         return False, None, err
 
@@ -2572,8 +2737,8 @@ def query_document_file(
         if not signed_url:
             return False, None, "Failed to upload file for QnA"
 
-        # Query using the signed URL
-        return query_document(signed_url, question, model)
+        # Signed URLs from Mistral may not resolve via local DNS; skip fail-closed DNS.
+        return query_document(signed_url, question, model, strict_dns=False)
 
     except Exception as e:
         error_msg = f"Error querying document file: {e}"
@@ -2774,6 +2939,7 @@ def submit_batch_ocr_job(
 
         batch_file_id = batch_data.id
         logger.info("Batch file uploaded: %s", batch_file_id)
+        _register_uploaded_file(batch_file_id, "batch")
 
         # Create the batch job
         job_params = {
@@ -2792,6 +2958,19 @@ def submit_batch_ocr_job(
 
         logger.info("Batch job created: %s", created_job.id)
 
+        if config.ENABLE_BATCH_METADATA:
+            try:
+                meta_path = config.METADATA_DIR / f"batch_job_{created_job.id}.json"
+                meta_payload = {
+                    "job_id": created_job.id,
+                    "model": model,
+                    "batch_file": batch_file_path.name,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                utils.atomic_write_text(meta_path, json.dumps(meta_payload, indent=2))
+            except OSError as meta_err:
+                logger.warning("Could not write batch job metadata: %s", meta_err)
+
         # Clean up the local JSONL file (contains signed URLs)
         try:
             batch_file_path.unlink(missing_ok=True)
@@ -2809,6 +2988,7 @@ def submit_batch_ocr_job(
         if batch_file_id:
             try:
                 client.files.delete(file_id=batch_file_id)
+                _unregister_uploaded_file(batch_file_id)
             except Exception as del_err:
                 logger.debug(
                     "Could not delete orphaned batch upload %s: %s",

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Local Mistral upload registry (`cache/mistral_upload_registry.json`) and `CLEANUP_UPLOAD_SCOPE` (`registry` default / `all`) so maintenance cleanup does not delete unrelated Files API objects on shared keys
+- `cli_files.py` for input listing/selection/validation (breaks `modes.batch` ↔ `main` circular import)
+- `MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION` (default false) to gate paid auto document classification
+- `OCR_OFFICE_PAGE_ESTIMATE_DEFAULT` for session page budgeting of non-PDF OCR inputs
+- `ALLOW_INSECURE_MISTRAL_SERVER` to explicitly opt into cleartext `MISTRAL_SERVER_URL`
+- `SCHEMA_STRICT_UNKNOWN_TYPES` to raise on unknown schema type names
+- Dependabot config for pip and GitHub Actions
 - `modes/` package containing `mode_document_qna`, `mode_batch_ocr`, `mode_system_status`, and `mode_maintenance`, extracted from `main.py` (main.py dropped from ~1,390 to ~915 lines)
 - `utils.to_conversion_result()` normalises converter returns (``ConversionResult``/tuple/bool) at the thread-pool boundary
 - `utils.mistral_ocr_size_error()` centralises the OCR file-size check shared by `utils.validate_file` and `mistral_converter._validate_file_for_ocr`
@@ -22,15 +29,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Default `MISTRAL_DOCUMENT_URL_STRICT_DNS=true` (fail closed for user URLs); file QnA signed URLs relax DNS fail-closed
+- Default `TABLE_OUTPUT_FORMATS=markdown` (was empty / no sidecars)
+- `MAX_BATCH_FILES` enforced for MarkItDown and PDF-to-images modes
+- `ENABLE_BATCH_METADATA` now writes `logs/metadata/batch_job_<id>.json` on successful batch submit
+- CI coverage gate `--cov-fail-under=75`; publish workflow runs black/isort/pyright/tests like PR checks
+- `pyproject.toml` pins aligned with `requirements.txt` for dotenv/pdfplumber/pdf2image; `cli_files` packaged
 - `.pre-commit-config.yaml` bumped to match `requirements-dev.txt`: black 26.3.0, flake8 7.3.0, isort 8.0.0; replaced the mypy hook with pyright v1.1.408
 - Narrowed broad `except Exception` + `logger.error` in `mistral_converter.py` to use `logger.exception` on the unexpected branches of OCR, QnA file upload, batch submit/status/download/list paths (preserves tracebacks in logs)
 - QnA retry no longer substring-matches error text: `modes.qna.mode_document_qna` calls `mistral_converter.is_signed_url_expiry_error()` which rejects permanent-auth hints before checking signed-URL expiry tokens
 - `schemas.py` now reuses `utils.logger` instead of wiring its own `logging.getLogger("document_converter")`
 - `.flake8` per-file ignores tightened: `main.py` no longer needs `C901`; new split test files covered by file-scoped `F401,W391`
-- Test count: 723 (up from ~696)
+- Test count: 736 (up from ~723)
 
 ### Fixed
 
+- Bare API `403` / `access denied` no longer triggers QnA signed-URL re-upload retry unless paired with signed-URL expiry hints
+- Markdown table sidecars escape `|` and newlines in cells
+- `ui_print` sanitizes ANSI/C0 control characters in string arguments
+- Weak-page OCR improvement replaces the full page dict (not only `text`)
+- MarkItDown conversion returns a clean error on `OSError` from `stat()` (TOCTOU)
+- FormDates ISO `YYYY-MM-DD` patterns aligned with other schema date fields
 - `--mode qna` retry loop no longer triggers on benign messages containing the word "url" (e.g. `"Failed to resolve document URL"`), and always treats 401/Unauthorized as non-retryable
 - OCR response parsing and batch API errors now emit full tracebacks for unexpected failures instead of a truncated one-line `logger.error`
 

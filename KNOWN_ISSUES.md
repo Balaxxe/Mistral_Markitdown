@@ -95,7 +95,13 @@ Document QnA is useful for summaries and exploratory follow-up questions, but it
 
 ### Document QnA URL validation is not a full SSRF barrier
 
-HTTPS and optional DNS checks filter obvious private-host URLs before calling Mistral, but they cannot prevent all rebinding or server-side fetch attacks. Treat URL mode as convenience-only unless you also constrain egress or use local file upload for QnA.
+HTTPS and DNS checks (fail-closed by default via `MISTRAL_DOCUMENT_URL_STRICT_DNS=true`) filter obvious private-host URLs before calling Mistral, but they cannot prevent all rebinding or server-side fetch attacks. Treat URL mode as convenience-only unless you also constrain egress or use local file upload for QnA.
+
+---
+
+### Upload cleanup defaults to this app's registry
+
+Maintenance cleanup (`CLEANUP_OLD_UPLOADS`) only deletes Mistral Files API objects that this app recorded locally (`CLEANUP_UPLOAD_SCOPE=registry`). Set `CLEANUP_UPLOAD_SCOPE=all` only when the API key is exclusive to this tool — otherwise shared keys can lose unrelated OCR/batch uploads.
 
 ---
 

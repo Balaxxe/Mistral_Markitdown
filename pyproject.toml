@@ -26,11 +26,11 @@ classifiers = [
 dependencies = [
     "markitdown[all]==0.1.5",
     "mistralai==2.1.3",
-    "python-dotenv>=1.2.0",
+    "python-dotenv==1.2.2",
     "pydantic>=2,<3",
     "Pillow>=10,<13",
-    "pdfplumber>=0.11.9",
-    "pdf2image>=1.17.0",
+    "pdfplumber==0.11.9",
+    "pdf2image==1.17.0",
 ]
 
 [project.optional-dependencies]
@@ -62,7 +62,7 @@ Documentation = "https://github.com/jaim12005/Mistral_Markitdown/blob/main/CONFI
 Changelog = "https://github.com/jaim12005/Mistral_Markitdown/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
-py-modules = ["main", "config", "schemas", "mistral_converter", "local_converter", "utils", "run_tests"]
+py-modules = ["main", "config", "schemas", "mistral_converter", "local_converter", "utils", "cli_files", "run_tests"]
 packages = ["modes"]
 
 [tool.black]

@@ -68,6 +68,7 @@ Document conversion depends on MarkItDown, pdfplumber, Poppler (pdf2image), and 
 - Documents uploaded for OCR are sent to Mistral's servers via their Files API.
 - Uploaded files are subject to Mistral's [data retention policy](https://mistral.ai/terms/).
 - The application auto-deletes uploaded files after a configurable retention period (`UPLOAD_RETENTION_DAYS`, default: 7 days).
+- By default cleanup is scoped to a local upload registry (`CLEANUP_UPLOAD_SCOPE=registry`) so shared API keys do not lose unrelated Files API objects. Set `CLEANUP_UPLOAD_SCOPE=all` only when this key is exclusive to this tool.
 - Review Mistral's terms of service before processing sensitive or regulated documents.
 
 ### URL Validation (SSRF Protection)
@@ -79,7 +80,8 @@ All document URLs (for QnA and streaming) are validated before use:
 - Private/internal network addresses are blocked (RFC 1918, link-local, loopback, cloud metadata endpoints including `169.254.169.254`).
 - IPv6-mapped IPv4 addresses are checked for private ranges.
 - DNS resolution is verified with a 5-second timeout to prevent DNS rebinding stalling.
-- **`MISTRAL_DOCUMENT_URL_STRICT_DNS`:** When set to `true`, URLs that fail local DNS resolution or time out are rejected (fail closed). Default is `false`, which allows URLs through if resolution fails locally (same tradeoff as documented below).
+- **`MISTRAL_DOCUMENT_URL_STRICT_DNS`:** Default `true` — user-supplied document URLs that fail local DNS resolution or time out are rejected (fail closed). Post-upload Mistral signed URLs (file QnA) relax this check so local DNS hiccups do not break the upload→query path. Set to `false` only if you need fail-open for unresolved public hostnames.
+- **`ALLOW_INSECURE_MISTRAL_SERVER`:** Default `false`. Cleartext `http://` values for `MISTRAL_SERVER_URL` are rejected unless this is explicitly enabled (API keys must not travel in cleartext).
 
 **Known limitation (TOCTOU):** The local DNS resolution check cannot fully prevent DNS rebinding attacks because Mistral's servers independently resolve the hostname when fetching the document. The local check remains valuable as a first-pass filter against obvious internal targets. For high-security deployments, restrict QnA to pre-uploaded files (via `query_document_file`) rather than arbitrary URLs.
 
@@ -106,7 +108,7 @@ The following limits prevent runaway API spend and resource exhaustion:
 | `MARKITDOWN_MAX_FILE_SIZE_MB`  | 100     | Hard reject before local conversion             |
 | `MISTRAL_OCR_MAX_FILE_SIZE_MB` | 200     | Hard reject before Mistral upload               |
 | `MISTRAL_QNA_MAX_FILE_SIZE_MB` | 50      | Hard reject before Document QnA upload          |
-| `MAX_BATCH_FILES`              | 100     | Hard reject in smart, OCR-only, and batch modes |
+| `MAX_BATCH_FILES`              | 100     | Hard reject in smart, MarkItDown, OCR, PDF→images, and batch modes |
 | `MAX_PAGES_PER_SESSION`        | 1000    | Hard reject (refuses further OCR after limit)   |
 | `MAX_CONCURRENT_FILES`         | 5       | Thread pool cap for parallel processing         |
 | `MISTRAL_BATCH_TIMEOUT_HOURS`  | 24      | Batch job auto-cancellation                     |
