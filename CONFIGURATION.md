@@ -833,8 +833,9 @@ INCLUDE_METADATA=true
 ### TABLE_OUTPUT_FORMATS
 
 - **Type:** Comma-separated string
-- **Default:** `"markdown"`
+- **Default:** `"markdown"` (when unset)
 - **Options:** `markdown`, `csv` (combine as `markdown,csv`)
+- **Disable sidecars:** set to an empty value (`TABLE_OUTPUT_FORMATS=""`); tables remain inline in the main `.md`
 
 ```ini
 TABLE_OUTPUT_FORMATS="markdown"

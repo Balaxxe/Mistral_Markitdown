@@ -18,7 +18,7 @@ import warnings
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 
@@ -134,6 +134,15 @@ def _safe_csv(env_var: str, default: str) -> List[str]:
         return [item.strip() for item in default.split(",") if item.strip()]
     values = [item.strip() for item in raw.split(",") if item.strip()]
     return values if values else [item.strip() for item in default.split(",") if item.strip()]
+
+
+def _parse_table_output_formats(raw: Optional[str]) -> List[str]:
+    """Parse TABLE_OUTPUT_FORMATS: unset -> markdown; blank -> no sidecars."""
+    if raw is None:
+        return ["markdown"]
+    if not raw.strip():
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 # ============================================================================
@@ -454,7 +463,8 @@ RETRY_CONNECTION_ERRORS = _safe_bool("RETRY_CONNECTION_ERRORS", True)
 
 GENERATE_TXT_OUTPUT = _safe_bool("GENERATE_TXT_OUTPUT", False)
 INCLUDE_METADATA = _safe_bool("INCLUDE_METADATA", True)
-TABLE_OUTPUT_FORMATS = _safe_csv("TABLE_OUTPUT_FORMATS", "markdown")
+# Unset -> default markdown sidecars; explicit empty string -> no sidecars.
+TABLE_OUTPUT_FORMATS = _parse_table_output_formats(os.getenv("TABLE_OUTPUT_FORMATS"))
 # When true, write local batch job metadata JSON under METADATA_DIR after submit.
 ENABLE_BATCH_METADATA = _safe_bool("ENABLE_BATCH_METADATA", True)
 # When true, unknown schema/model type names raise ValueError instead of falling back.

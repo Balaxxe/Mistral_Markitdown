@@ -213,6 +213,16 @@ class TestSafeParsingHelpers:
         result = config._safe_csv("TEST_CSV_VAR", "a,b,c")
         assert result == ["a", "b", "c"]
 
+    def test_parse_table_output_formats_unset_defaults_markdown(self):
+        assert config._parse_table_output_formats(None) == ["markdown"]
+
+    def test_parse_table_output_formats_blank_disables_sidecars(self):
+        assert config._parse_table_output_formats("") == []
+        assert config._parse_table_output_formats("   ") == []
+
+    def test_parse_table_output_formats_csv_list(self):
+        assert config._parse_table_output_formats("markdown,csv") == ["markdown", "csv"]
+
 
 class TestSafeIntBelowMinWarning:
     """Line 55: _safe_int value below min_val triggers warning."""
