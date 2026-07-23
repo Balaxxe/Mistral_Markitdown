@@ -29,7 +29,7 @@ dependencies = [
     "python-dotenv==1.2.2",
     "pydantic>=2,<3",
     "Pillow>=10,<13",
-    "pdfplumber==0.11.9",
+    "pdfplumber==0.11.10",
     "pdf2image==1.17.0",
 ]
 

@@ -18,7 +18,7 @@ pydantic>=2,<3
 Pillow>=10,<13
 
 # PDF table extraction beyond MarkItDown's built-in support
-pdfplumber==0.11.9
+pdfplumber==0.11.10
 
 # PDF to image conversion (requires Poppler system binary)
 pdf2image==1.17.0
