@@ -24,11 +24,11 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file.
 #
-# IMPORTANT: All configuration values below are evaluated once at import time.
-# Subsequent changes to the .env file or environment variables will NOT take
-# effect until the process is restarted.  Tests that need to override config
-# values should monkeypatch the ``config.<ATTR>`` attributes directly rather
-# than patching environment variables (which are already consumed).
+# IMPORTANT: Configuration values are evaluated at import time. Library embeds
+# that change the environment after import should call ``reload_settings()``
+# (path constants such as ``BASE_DIR`` / ``INPUT_DIR`` still require a restart).
+# Tests that need to override config values should monkeypatch ``config.<ATTR>``
+# directly rather than patching environment variables.
 load_dotenv()
 
 __all__ = [
@@ -37,6 +37,7 @@ __all__ = [
     "mistral_openai_compatible_base_url",
     "validate_configuration",
     "initialize",
+    "reload_settings",
 ]
 
 
@@ -165,9 +166,9 @@ BASE_DIR = Path(__file__).parent.resolve()
 INPUT_DIR = BASE_DIR / "input"
 
 # When true, ``utils.validate_file`` rejects paths that resolve outside ``INPUT_DIR``
-# (e.g. symlinks pointing outside the inbox). Default false preserves tests and
-# programmatic callers that pass arbitrary paths.
-STRICT_INPUT_PATH_RESOLUTION = _safe_bool("STRICT_INPUT_PATH_RESOLUTION", False)
+# (e.g. symlinks pointing outside the inbox). Default true prefers path confinement;
+# set false for programmatic callers that intentionally pass arbitrary paths.
+STRICT_INPUT_PATH_RESOLUTION = _safe_bool("STRICT_INPUT_PATH_RESOLUTION", True)
 
 OUTPUT_MD_DIR = BASE_DIR / "output_md"
 OUTPUT_TXT_DIR = BASE_DIR / "output_txt"
@@ -391,6 +392,9 @@ PDF_IMAGE_FORMAT = os.getenv("PDF_IMAGE_FORMAT", "png").strip().lower()
 PDF_IMAGE_DPI = _safe_int("PDF_IMAGE_DPI", 200, min_val=72)
 PDF_IMAGE_THREAD_COUNT = _safe_int("PDF_IMAGE_THREAD_COUNT", 4, min_val=1)
 PDF_IMAGE_USE_PDFTOCAIRO = _safe_bool("PDF_IMAGE_USE_PDFTOCAIRO", True)
+# Cap pages rendered by pdf2image (0 = unlimited). Prevents disk/CPU exhaustion
+# from dense PDFs that still fit under the MB size gates.
+PDF_IMAGE_MAX_PAGES = _safe_int("PDF_IMAGE_MAX_PAGES", 100, min_val=0)
 
 # ============================================================================
 # System Configuration
@@ -448,14 +452,23 @@ MISTRAL_BATCH_STRICT = _safe_bool("MISTRAL_BATCH_STRICT", False)
 MISTRAL_CLIENT_TIMEOUT_MS = _safe_int("MISTRAL_CLIENT_TIMEOUT_MS", 300_000, min_val=1)
 
 # Retry Configuration (for Mistral API calls)
-# Set to 0 to disable retries entirely. Actual retry count is bounded by
-# RETRY_MAX_ELAPSED_TIME_MS (the SDK does not support a max-attempts parameter).
+# MAX_RETRIES is an on/off gate (0 disables; any positive value enables SDK
+# backoff). The SDK has no max-attempts knob — retries are bounded by
+# RETRY_MAX_ELAPSED_TIME_MS. ENABLE_RETRIES mirrors MAX_RETRIES > 0 for clarity.
 MAX_RETRIES = _safe_int("MAX_RETRIES", 3)
+# Optional explicit enable flag; when unset, derived from MAX_RETRIES != 0.
+_raw_enable_retries = os.getenv("ENABLE_RETRIES")
+if _raw_enable_retries is None or not str(_raw_enable_retries).strip():
+    ENABLE_RETRIES = MAX_RETRIES != 0
+else:
+    ENABLE_RETRIES = _safe_bool("ENABLE_RETRIES", MAX_RETRIES != 0)
 RETRY_INITIAL_INTERVAL_MS = _safe_int("RETRY_INITIAL_INTERVAL_MS", 1000)  # 1 second
 RETRY_MAX_INTERVAL_MS = _safe_int("RETRY_MAX_INTERVAL_MS", 10000)  # 10 seconds
 RETRY_EXPONENT = _safe_float("RETRY_EXPONENT", 2.0, min_val=1.0)  # Exponential backoff
 RETRY_MAX_ELAPSED_TIME_MS = _safe_int("RETRY_MAX_ELAPSED_TIME_MS", 60000)  # 1 minute
 RETRY_CONNECTION_ERRORS = _safe_bool("RETRY_CONNECTION_ERRORS", True)
+# When CLEANUP_UPLOAD_SCOPE=all, require this (or interactive confirmation) before deleting.
+CLEANUP_UPLOAD_ALL_CONFIRM = _safe_bool("CLEANUP_UPLOAD_ALL_CONFIRM", False)
 
 # ============================================================================
 # Output Configuration
@@ -746,6 +759,19 @@ def validate_configuration() -> List[str]:
             "Signed URLs grant access to uploaded documents; consider <=24h."
         )
 
+    if not STRICT_INPUT_PATH_RESOLUTION:
+        issues.append(
+            "SECURITY: STRICT_INPUT_PATH_RESOLUTION is false. "
+            "validate_file will accept paths outside INPUT_DIR (including symlink escapes)."
+        )
+
+    if CLEANUP_UPLOAD_SCOPE == "all" and not CLEANUP_UPLOAD_ALL_CONFIRM:
+        issues.append(
+            "SECURITY: CLEANUP_UPLOAD_SCOPE=all can delete unrelated Files API objects on a "
+            "shared API key. Maintenance requires interactive confirmation or "
+            "CLEANUP_UPLOAD_ALL_CONFIRM=true."
+        )
+
     return issues
 
 
@@ -756,6 +782,79 @@ def validate_configuration() -> List[str]:
 _initialized = False
 _init_lock = threading.Lock()
 _init_issues: List[str] = []
+
+
+def reload_settings(*, override_dotenv: bool = True) -> None:
+    """Re-read environment variables into this module's globals.
+
+    Intended for library embeds that change env vars after the first import.
+    Path constants (``BASE_DIR``, ``INPUT_DIR``, …) are left unchanged — restart
+    the process to relocate the working tree. Tests should continue to
+    monkeypatch ``config.<ATTR>`` directly.
+    """
+    global MISTRAL_API_KEY, MISTRAL_SERVER_URL, ALLOW_INSECURE_MISTRAL_SERVER
+    global MISTRAL_OCR_MODEL, MISTRAL_DOCUMENT_QNA_MODEL
+    global MISTRAL_INCLUDE_IMAGES, SAVE_MISTRAL_JSON
+    global MISTRAL_BATCH_ENABLED, MISTRAL_BATCH_MIN_FILES
+    global CLEANUP_OLD_UPLOADS, UPLOAD_RETENTION_DAYS, CLEANUP_UPLOAD_SCOPE
+    global CLEANUP_UPLOAD_ALL_CONFIRM
+    global STRICT_INPUT_PATH_RESOLUTION
+    global MARKITDOWN_MAX_FILE_SIZE_MB, MISTRAL_OCR_MAX_FILE_SIZE_MB, MISTRAL_QNA_MAX_FILE_SIZE_MB
+    global MAX_PAGES_PER_SESSION, MAX_CONCURRENT_FILES, MAX_BATCH_FILES
+    global MAX_RETRIES, ENABLE_RETRIES
+    global RETRY_INITIAL_INTERVAL_MS, RETRY_MAX_INTERVAL_MS, RETRY_EXPONENT
+    global RETRY_MAX_ELAPSED_TIME_MS, RETRY_CONNECTION_ERRORS, MISTRAL_CLIENT_TIMEOUT_MS
+    global PDF_IMAGE_FORMAT, PDF_IMAGE_DPI, PDF_IMAGE_THREAD_COUNT
+    global PDF_IMAGE_USE_PDFTOCAIRO, PDF_IMAGE_MAX_PAGES, POPPLER_PATH
+    global CACHE_DURATION_HOURS, AUTO_CLEAR_CACHE
+    global GENERATE_TXT_OUTPUT, INCLUDE_METADATA
+
+    if override_dotenv:
+        load_dotenv(override=True)
+
+    MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
+    MISTRAL_SERVER_URL = os.getenv("MISTRAL_SERVER_URL", "").strip().rstrip("/")
+    ALLOW_INSECURE_MISTRAL_SERVER = _safe_bool("ALLOW_INSECURE_MISTRAL_SERVER", False)
+    MISTRAL_OCR_MODEL = os.getenv("MISTRAL_OCR_MODEL", "mistral-ocr-latest")
+    MISTRAL_DOCUMENT_QNA_MODEL = os.getenv("MISTRAL_DOCUMENT_QNA_MODEL", "mistral-small-latest").strip()
+    MISTRAL_INCLUDE_IMAGES = _safe_bool("MISTRAL_INCLUDE_IMAGES", True)
+    SAVE_MISTRAL_JSON = _safe_bool("SAVE_MISTRAL_JSON", False)
+    MISTRAL_BATCH_ENABLED = _safe_bool("MISTRAL_BATCH_ENABLED", True)
+    MISTRAL_BATCH_MIN_FILES = _safe_int("MISTRAL_BATCH_MIN_FILES", 10, min_val=1)
+    CLEANUP_OLD_UPLOADS = _safe_bool("CLEANUP_OLD_UPLOADS", True)
+    UPLOAD_RETENTION_DAYS = _safe_int("UPLOAD_RETENTION_DAYS", 7, min_val=1)
+    _scope = os.getenv("CLEANUP_UPLOAD_SCOPE", "registry").strip().lower()
+    CLEANUP_UPLOAD_SCOPE = _scope if _scope in {"registry", "all"} else "registry"
+    CLEANUP_UPLOAD_ALL_CONFIRM = _safe_bool("CLEANUP_UPLOAD_ALL_CONFIRM", False)
+    STRICT_INPUT_PATH_RESOLUTION = _safe_bool("STRICT_INPUT_PATH_RESOLUTION", True)
+    MARKITDOWN_MAX_FILE_SIZE_MB = _safe_int("MARKITDOWN_MAX_FILE_SIZE_MB", 100)
+    MISTRAL_OCR_MAX_FILE_SIZE_MB = _safe_int("MISTRAL_OCR_MAX_FILE_SIZE_MB", 200, min_val=1)
+    MISTRAL_QNA_MAX_FILE_SIZE_MB = _safe_int("MISTRAL_QNA_MAX_FILE_SIZE_MB", 50, min_val=1)
+    MAX_PAGES_PER_SESSION = _safe_int("MAX_PAGES_PER_SESSION", 1000)
+    MAX_CONCURRENT_FILES = _safe_int("MAX_CONCURRENT_FILES", 5, min_val=1)
+    MAX_BATCH_FILES = _safe_int("MAX_BATCH_FILES", 100)
+    MAX_RETRIES = _safe_int("MAX_RETRIES", 3)
+    _raw_enable_retries = os.getenv("ENABLE_RETRIES")
+    if _raw_enable_retries is None or not str(_raw_enable_retries).strip():
+        ENABLE_RETRIES = MAX_RETRIES != 0
+    else:
+        ENABLE_RETRIES = _safe_bool("ENABLE_RETRIES", MAX_RETRIES != 0)
+    RETRY_INITIAL_INTERVAL_MS = _safe_int("RETRY_INITIAL_INTERVAL_MS", 1000)
+    RETRY_MAX_INTERVAL_MS = _safe_int("RETRY_MAX_INTERVAL_MS", 10000)
+    RETRY_EXPONENT = _safe_float("RETRY_EXPONENT", 2.0, min_val=1.0)
+    RETRY_MAX_ELAPSED_TIME_MS = _safe_int("RETRY_MAX_ELAPSED_TIME_MS", 60000)
+    RETRY_CONNECTION_ERRORS = _safe_bool("RETRY_CONNECTION_ERRORS", True)
+    MISTRAL_CLIENT_TIMEOUT_MS = _safe_int("MISTRAL_CLIENT_TIMEOUT_MS", 300_000, min_val=1)
+    PDF_IMAGE_FORMAT = os.getenv("PDF_IMAGE_FORMAT", "png").strip().lower()
+    PDF_IMAGE_DPI = _safe_int("PDF_IMAGE_DPI", 200, min_val=72)
+    PDF_IMAGE_THREAD_COUNT = _safe_int("PDF_IMAGE_THREAD_COUNT", 4, min_val=1)
+    PDF_IMAGE_USE_PDFTOCAIRO = _safe_bool("PDF_IMAGE_USE_PDFTOCAIRO", True)
+    PDF_IMAGE_MAX_PAGES = _safe_int("PDF_IMAGE_MAX_PAGES", 100, min_val=0)
+    POPPLER_PATH = os.getenv("POPPLER_PATH", "")
+    CACHE_DURATION_HOURS = _safe_int("CACHE_DURATION_HOURS", 24)
+    AUTO_CLEAR_CACHE = _safe_bool("AUTO_CLEAR_CACHE", True)
+    GENERATE_TXT_OUTPUT = _safe_bool("GENERATE_TXT_OUTPUT", False)
+    INCLUDE_METADATA = _safe_bool("INCLUDE_METADATA", True)
 
 
 def initialize() -> List[str]:

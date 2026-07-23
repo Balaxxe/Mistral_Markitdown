@@ -117,7 +117,7 @@ class TestModeConvertSmart:
             "table_count": 0,
             "methods_used": [],
         }
-        mock_local.convert_with_markitdown.return_value = (True, "Content", None)
+        mock_local.convert_with_markitdown.return_value = (True, Path("out.md"), None)
 
         success, _ = main.mode_convert_smart([pdf_file])
 
@@ -173,7 +173,7 @@ class TestModeConvertSmart:
         docx_file = tmp_path / "doc.docx"
         docx_file.write_bytes(b"PK\x03\x04")
 
-        mock_local.convert_with_markitdown.return_value = (True, "Content", None)
+        mock_local.convert_with_markitdown.return_value = (True, Path("out.md"), None)
 
         success, message = main.mode_convert_smart([docx_file])
 
@@ -220,7 +220,7 @@ class TestModeConvertSmart:
             "file_type": "pdf",
             "page_count": 1,
         }
-        mock_local.convert_with_markitdown.return_value = (True, "Content", None)
+        mock_local.convert_with_markitdown.return_value = (True, Path("out.md"), None)
 
         success, _ = main.mode_convert_smart([pdf_file])
 
@@ -239,7 +239,7 @@ class TestModeConvertSmart:
         png_file = tmp_path / "scan.png"
         png_file.write_bytes(b"\x89PNG\r\n\x1a\n")
 
-        mock_local.convert_with_markitdown.return_value = (True, "Content", None)
+        mock_local.convert_with_markitdown.return_value = (True, Path("out.md"), None)
 
         success, _ = main.mode_convert_smart([png_file])
 
@@ -257,7 +257,7 @@ class TestModeConvertSmart:
         txt_file = tmp_path / "notes.txt"
         txt_file.write_text("hello world")
 
-        mock_local.convert_with_markitdown.return_value = (True, "hello world", None)
+        mock_local.convert_with_markitdown.return_value = (True, Path("out.md"), None)
 
         success, _ = main.mode_convert_smart([txt_file])
 
@@ -326,7 +326,7 @@ class TestModeConcurrency:
             f.write_text(f"content {i}")
             files.append(f)
 
-        mock_local.convert_with_markitdown.return_value = (True, "ok", None)
+        mock_local.convert_with_markitdown.return_value = (True, Path("out.md"), None)
 
         success, message = main.mode_markitdown_only(files)
 
@@ -1854,7 +1854,8 @@ class TestModeDocumentQnaExpanded:
                     with patch("builtins.input", side_effect=inputs):
                         ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
+        assert ok is False
+        assert "0 question" in msg
 
     def test_qna_keyboard_interrupt(self, tmp_path, monkeypatch):
         """KeyboardInterrupt breaks QnA loop."""
@@ -1875,7 +1876,8 @@ class TestModeDocumentQnaExpanded:
                 with patch("builtins.input", side_effect=KeyboardInterrupt):
                     ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
+        assert ok is False
+        assert "0 question" in msg
 
     def test_qna_stream_iteration_error(self, tmp_path, monkeypatch):
         """Lines 378-379: stream raises exception during iteration."""
@@ -1907,7 +1909,8 @@ class TestModeDocumentQnaExpanded:
                     with patch("builtins.input", side_effect=inputs):
                         ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
+        assert ok is False
+        assert "0 question" in msg
 
     def test_qna_url_refresh_fails(self, tmp_path, monkeypatch):
         """URL refresh fails during loop."""
@@ -1928,7 +1931,8 @@ class TestModeDocumentQnaExpanded:
                 with patch("builtins.input", side_effect=inputs):
                     ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
+        assert ok is False
+        assert "0 question" in msg
 
 
 class TestShouldUseOcrRouting:

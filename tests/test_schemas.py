@@ -129,9 +129,10 @@ class TestPydanticModelValidation:
         with pytest.raises(Exception):
             schemas.LineItem(description="test")
 
-    def test_invoice_date_rejects_bad_format(self):
-        with pytest.raises(Exception):
-            schemas.InvoiceDetails(invoice_number="1", invoice_date="not-a-date")
+    def test_invoice_date_accepts_free_form(self):
+        """OCR dates are often non-ISO; schemas accept free-form strings."""
+        details = schemas.InvoiceDetails(invoice_number="1", invoice_date="not-a-date")
+        assert details.invoice_date == "not-a-date"
 
     def test_invoice_date_accepts_iso_format(self):
         details = schemas.InvoiceDetails(invoice_number="1", invoice_date="2024-01-15")

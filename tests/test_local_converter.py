@@ -383,10 +383,11 @@ class TestConvertWithMarkItDown:
         mock_md.convert.return_value = mock_result
 
         with patch.object(local_converter, "get_markitdown_instance", return_value=mock_md):
-            success, content, error = local_converter.convert_with_markitdown(test_file)
+            success, output_path, error = local_converter.convert_with_markitdown(test_file)
 
         assert success is True
-        assert "hello world" in content
+        assert output_path is not None
+        assert "hello world" in output_path.read_text(encoding="utf-8")
         assert error is None
 
     def test_conversion_exception(self, tmp_path, monkeypatch):

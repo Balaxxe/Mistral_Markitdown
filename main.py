@@ -211,7 +211,8 @@ def _extract_pdf_tables(file_path: Path) -> None:
     """Run pdfplumber table extraction for a PDF and save sidecar files.
 
     Skips silently when the PDF exceeds the heavy-work size cap.
-    Logs but does not raise on extraction failures.
+    Logs but does not raise on extraction failures — sidecar work must never
+    abort the primary conversion path.
     """
     too_large, size_err = utils.pdf_exceeds_heavy_work_limit(file_path)
     if too_large:
@@ -226,7 +227,7 @@ def _extract_pdf_tables(file_path: Path) -> None:
                 table_result["table_count"],
                 file_path.name,
             )
-    except (OSError, ValueError) as e:
+    except Exception as e:
         logger.warning("Table extraction failed for %s: %s", file_path.name, e)
 
 
@@ -251,10 +252,7 @@ def _process_single_smart(
 
     if use_ocr:
         return mistral_converter.convert_with_mistral_ocr(file_path)
-    else:
-        success, content, error = local_converter.convert_with_markitdown(file_path)
-        output_path = config.OUTPUT_MD_DIR / f"{utils.safe_output_stem(file_path)}.md" if success else None
-        return success, output_path, error
+    return local_converter.convert_with_markitdown(file_path)
 
 
 def mode_convert_smart(file_paths: List[Path]) -> Tuple[bool, str]:
@@ -269,6 +267,7 @@ def mode_convert_smart(file_paths: List[Path]) -> Tuple[bool, str]:
 
     Multiple files are processed concurrently.
     """
+    mistral_converter.reset_session_page_counter()
     logger.info("SMART CONVERT MODE: Processing %d file(s)", len(file_paths))
 
     if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
@@ -307,7 +306,7 @@ def mode_convert_smart(file_paths: List[Path]) -> Tuple[bool, str]:
 
 def _process_single_markitdown_with_pdf_tables(
     file_path: Path,
-) -> Tuple[bool, Optional[str], Optional[str]]:
+) -> Tuple[bool, Optional[Path], Optional[str]]:
     """MarkItDown conversion with pdfplumber table sidecars for PDFs (smart-mode parity)."""
     if file_path.suffix.lower().lstrip(".") == "pdf":
         _extract_pdf_tables(file_path)
@@ -388,6 +387,7 @@ def mode_mistral_ocr_only(file_paths: List[Path]) -> Tuple[bool, str]:
             "Increase the limit or split into smaller batches."
         )
 
+    mistral_converter.reset_session_page_counter()
     logger.info("MISTRAL OCR MODE: Processing %d file(s)", len(file_paths))
 
     successful, failed = _process_files_concurrently(

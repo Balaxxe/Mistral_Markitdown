@@ -9,6 +9,7 @@ converter output.
 from __future__ import annotations
 
 import shutil
+import sys
 from typing import Tuple
 
 import config
@@ -16,6 +17,26 @@ import mistral_converter
 import utils
 
 logger = utils.logger
+
+
+def _confirm_cleanup_upload_all() -> bool:
+    """Require explicit confirmation before account-wide Files API cleanup."""
+    if getattr(config, "CLEANUP_UPLOAD_ALL_CONFIRM", False):
+        return True
+    if not sys.stdin.isatty():
+        utils.ui_print(
+            "  - Skipped upload cleanup: CLEANUP_UPLOAD_SCOPE=all requires "
+            "interactive confirmation or CLEANUP_UPLOAD_ALL_CONFIRM=true"
+        )
+        return False
+    try:
+        answer = input(
+            "CLEANUP_UPLOAD_SCOPE=all will delete old Files API uploads for this "
+            "API key (including objects not created by this app). Type 'yes' to proceed: "
+        )
+    except EOFError:
+        return False
+    return answer.strip().lower() == "yes"
 
 
 def mode_system_status() -> Tuple[bool, str]:
@@ -137,25 +158,28 @@ def mode_maintenance() -> Tuple[bool, str]:
 
     # 2. Clean up old uploaded files from Mistral
     if config.CLEANUP_OLD_UPLOADS and config.MISTRAL_API_KEY:
-        try:
-            client = mistral_converter.get_mistral_client()
-            if client:
-                deleted = mistral_converter.cleanup_uploaded_files(client)
-                if deleted > 0:
-                    scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
-                    msg = (
-                        f"Cleaned up {deleted} old uploaded files from Mistral "
-                        f"(>{config.UPLOAD_RETENTION_DAYS} days, scope={scope})"
-                    )
-                    out(f"  ✓ {msg}")
-                    actions_taken.append(msg)
+        scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+        if scope == "all" and not _confirm_cleanup_upload_all():
+            out("  - Skipped upload cleanup (account-wide scope not confirmed)")
+        else:
+            try:
+                client = mistral_converter.get_mistral_client()
+                if client:
+                    deleted = mistral_converter.cleanup_uploaded_files(client)
+                    if deleted > 0:
+                        msg = (
+                            f"Cleaned up {deleted} old uploaded files from Mistral "
+                            f"(>{config.UPLOAD_RETENTION_DAYS} days, scope={scope})"
+                        )
+                        out(f"  ✓ {msg}")
+                        actions_taken.append(msg)
+                    else:
+                        out("  - No old uploaded files to clean up")
                 else:
-                    out("  - No old uploaded files to clean up")
-            else:
-                out("  - Mistral client not available")
-        except Exception as e:
-            logger.debug("Could not clean up uploads: %s", e)
-            out(f"  ! Upload cleanup failed: {e}")
+                    out("  - Mistral client not available")
+            except Exception as e:
+                logger.debug("Could not clean up uploads: %s", e)
+                out(f"  ! Upload cleanup failed: {e}")
     elif not config.MISTRAL_API_KEY:
         out("  - Skipping upload cleanup (no API key)")
     else:

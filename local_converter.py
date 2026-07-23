@@ -163,7 +163,7 @@ def reset_markitdown_instance() -> None:
 
 def convert_with_markitdown(
     file_path: Path,
-) -> Tuple[bool, Optional[str], Optional[str]]:
+) -> Tuple[bool, Optional[Path], Optional[str]]:
     """
     Convert a file using MarkItDown.
 
@@ -171,7 +171,8 @@ def convert_with_markitdown(
         file_path: Path to file to convert
 
     Returns:
-        Tuple of (success, markdown_content, error_message)
+        Tuple of (success, output_path, error_message). On success ``output_path``
+        is the written Markdown file under ``config.OUTPUT_MD_DIR``.
     """
     # Enforce file size limit
     try:
@@ -237,7 +238,7 @@ def convert_with_markitdown(
                     file_path.name,
                 )
 
-            return True, full_content, None
+            return True, output_path, None
 
         else:
             return False, None, "No content returned from MarkItDown"
@@ -772,6 +773,23 @@ def convert_pdf_to_images(
         if thread_count is None:
             thread_count = config.PDF_IMAGE_THREAD_COUNT
 
+        max_pages = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
+        if max_pages > 0:
+            try:
+                analysis = analyze_file_content(pdf_path)
+                page_count = int(analysis.get("page_count") or 0)
+            except (OSError, ValueError, TypeError):
+                page_count = 0
+            if page_count > max_pages:
+                return (
+                    False,
+                    [],
+                    (
+                        f"PDF has {page_count} pages; exceeds PDF_IMAGE_MAX_PAGES "
+                        f"({max_pages}). Lower DPI, split the PDF, or raise the limit."
+                    ),
+                )
+
         logger.info(
             "Converting PDF to images: %s (DPI: %d, Format: %s)",
             pdf_path.name,
@@ -794,6 +812,10 @@ def convert_pdf_to_images(
             "output_file": "page",
             "paths_only": True,
         }
+        if max_pages > 0:
+            # pdf2image: last_page is inclusive; cap rendering even if page_count
+            # analysis failed (page_count == 0).
+            convert_params["last_page"] = max_pages
 
         # Convert PDF to images directly on disk
         temp_paths = convert_from_path(**convert_params)

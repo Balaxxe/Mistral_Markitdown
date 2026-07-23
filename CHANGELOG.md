@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mistral_converter/` package split (client, upload, OCR, QnA, batch, SSRF, images) with facade-compatible `import mistral_converter`
+- `config.reload_settings()` for library embeds that change env after import
+- `PDF_IMAGE_MAX_PAGES` (default 100) to bound local pdf2image rendering
+- `ENABLE_RETRIES` and `CLEANUP_UPLOAD_ALL_CONFIRM` configuration knobs
+- On-disk integration tests in `tests/test_integration_markitdown.py`
 - Local Mistral upload registry (`cache/mistral_upload_registry.json`) and `CLEANUP_UPLOAD_SCOPE` (`registry` default / `all`) so maintenance cleanup does not delete unrelated Files API objects on shared keys
 - `cli_files.py` for input listing/selection/validation (breaks `modes.batch` ↔ `main` circular import)
 - `MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION` (default false) to gate paid auto document classification
@@ -29,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `convert_with_markitdown` returns `(success, output_path, error)` like OCR (Path contract)
+- Default `STRICT_INPUT_PATH_RESOLUTION=true`; tests relax via autouse fixture
+- Structured OCR date fields accept free-form strings (prefer ISO, no hard pattern)
+- Interactive QnA returns failure when zero questions succeed
+- OCR session page budget resets at mode entry; unknown PDF page counts reserve 1 page
+- Table extraction sidecars never abort primary conversion
+- Tighter pyright warnings (`reportGeneralTypeIssues` / `reportAttributeAccessIssue` / `reportMissingImports`)
 - Bump `setuptools` to `>=83` / `~=83.0` (PYSEC-2026-3447) and upgrade it in the security workflow before `pip-audit`
 - Default `MISTRAL_DOCUMENT_URL_STRICT_DNS=true` (fail closed for user URLs); file QnA signed URLs relax DNS fail-closed
 - Default `TABLE_OUTPUT_FORMATS=markdown` (was empty / no sidecars)

@@ -59,7 +59,7 @@ flowchart TD
 | `utils.py`             | Logging, caching (SHA-256 + TTL), table formatting, file validation, YAML frontmatter        |
 | `schemas.py`           | Pydantic models and JSON schemas for structured extraction (invoices, contracts, etc.)       |
 | `local_converter.py`   | MarkItDown wrapper, low-quality output detection, PDF table extraction, PDF to images        |
-| `mistral_converter.py` | Mistral OCR client, upload/process/batch, QnA streaming, SSRF validation, image optimization |
+| `mistral_converter/`   | Mistral package: client, upload, OCR, QnA, batch, SSRF validation, image optimization (`import mistral_converter`) |
 | `main.py`              | CLI entry point, smart routing, concurrent processing, interactive menu, system status       |
 | `cli_files.py`         | Input directory listing, validation, and interactive file selection                          |
 

@@ -7,6 +7,14 @@ artifacts. Prefer ``tmp_path`` + local setup for one-off cases.
 
 import pytest
 
+import config
+
+
+@pytest.fixture(autouse=True)
+def _relax_strict_input_path_resolution(monkeypatch):
+    """Production defaults to STRICT_INPUT_PATH_RESOLUTION=true; tests use tmp paths."""
+    monkeypatch.setattr(config, "STRICT_INPUT_PATH_RESOLUTION", False)
+
 
 @pytest.fixture
 def sample_pdf_path(tmp_path):

@@ -4,10 +4,10 @@
   "pythonVersion": "3.12",
   "extraPaths": ["."],
   "typeCheckingMode": "basic",
-  "reportMissingImports": "none",
+  "reportMissingImports": "warning",
   "reportMissingModuleSource": "none",
-  "reportInvalidTypeForm": "none",
-  "reportGeneralTypeIssues": "none",
-  "reportAttributeAccessIssue": "none",
-  "exclude": ["tests/", "run_tests.py", ".venv/", "env/", "build/", "dist/", "htmlcov/"]
+  "reportInvalidTypeForm": "warning",
+  "reportGeneralTypeIssues": "warning",
+  "reportAttributeAccessIssue": "warning",
+  "exclude": ["tests/", "run_tests.py", ".venv/", "env/", "build/", "dist/", "htmlcov/", "scripts/"]
 }
