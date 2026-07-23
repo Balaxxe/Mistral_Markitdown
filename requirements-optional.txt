@@ -24,7 +24,7 @@
 # Requires: MARKITDOWN_ENABLE_LLM_DESCRIPTIONS=true in .env
 # Uses Mistral API key (no separate OpenAI key needed)
 
-openai>=1.0.0
+openai>=2.47.0
 
 # ----------------------------------------------------------------------------
 # Audio Transcription (Mode 5: Transcription)
