@@ -6,7 +6,7 @@
 markitdown[all]==0.1.6
 
 # Core: Mistral AI SDK v2 for OCR, QnA, and Batch API
-mistralai==2.1.3
+mistralai==2.7.1
 
 # Core: Load .env configuration
 python-dotenv==1.2.2
