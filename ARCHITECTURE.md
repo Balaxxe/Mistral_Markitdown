@@ -62,7 +62,6 @@ flowchart TD
 | `mistral_converter.py` | Mistral OCR client, upload/process/batch, QnA streaming, SSRF validation, image optimization |
 | `main.py`              | CLI entry point, smart routing, concurrent processing, interactive menu, system status       |
 | `cli_files.py`         | Input directory listing, validation, and interactive file selection                          |
-| `cli_files.py`         | Input directory listing, validation, and interactive file selection                          |
 
 ## Data Flow
 
