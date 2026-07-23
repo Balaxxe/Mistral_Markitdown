@@ -222,20 +222,27 @@ def _load_upload_registry() -> List[Dict[str, Any]]:
         return []
 
 
-def _save_upload_registry(entries: List[Dict[str, Any]]) -> None:
-    """Persist the upload registry atomically."""
+def _save_upload_registry(entries: List[Dict[str, Any]]) -> bool:
+    """Persist the upload registry atomically. Returns False on I/O failure."""
     path = _upload_registry_path()
     try:
         config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         utils.atomic_write_text(path, json.dumps(entries, indent=2))
+        return True
     except OSError as e:
         logger.warning("Could not save upload registry: %s", e)
+        return False
 
 
-def _register_uploaded_file(file_id: str, purpose: str) -> None:
-    """Record an uploaded file id in the local registry."""
+def _register_uploaded_file(file_id: str, purpose: str) -> bool:
+    """Record an uploaded file id in the local registry.
+
+    Returns False when the id is empty or the registry cannot be persisted, so
+    callers can delete the remote upload instead of orphaning it under
+    ``CLEANUP_UPLOAD_SCOPE=registry``.
+    """
     if not file_id:
-        return
+        return False
     now = datetime.now(timezone.utc).isoformat()
     with _UPLOAD_REGISTRY_LOCK:
         entries = _load_upload_registry()
@@ -244,10 +251,9 @@ def _register_uploaded_file(file_id: str, purpose: str) -> None:
                 entry["purpose"] = purpose
                 if not entry.get("created_at"):
                     entry["created_at"] = now
-                _save_upload_registry(entries)
-                return
+                return _save_upload_registry(entries)
         entries.append({"id": file_id, "purpose": purpose, "created_at": now})
-        _save_upload_registry(entries)
+        return _save_upload_registry(entries)
 
 
 def _unregister_uploaded_file(file_id: str) -> None:
@@ -869,7 +875,8 @@ def _cleanup_registry_scoped(client: Mistral, cutoff_date: datetime) -> int:
             if not file_id:
                 continue
             file_created = _parse_registry_created_at(entry.get("created_at"))
-            if file_created is None or file_created >= cutoff_date:
+            # Missing/unparsable timestamps must not permanently shield uploads.
+            if file_created is not None and file_created >= cutoff_date:
                 remaining.append(entry)
                 continue
             try:
@@ -1034,7 +1041,10 @@ def _upload_file_for_ocr_pair(
         url = getattr(signed_url_response, "url", None)
         if url:
             logger.debug("Got signed URL for file %s", file_id)
-            _register_uploaded_file(file_id, "ocr")
+            if not _register_uploaded_file(file_id, "ocr"):
+                logger.error("Failed to persist upload registry for file %s; deleting remote upload", file_id)
+                _delete_ocr_file_ids(client, [file_id])
+                return None
             return url, file_id
 
         logger.error("Failed to get signed URL for uploaded file")
@@ -2962,7 +2972,8 @@ def submit_batch_ocr_job(
             return False, None, "Batch upload response missing file ID"
         batch_file_id = uploaded_id
         logger.info("Batch file uploaded: %s", batch_file_id)
-        _register_uploaded_file(batch_file_id, "batch")
+        if not _register_uploaded_file(batch_file_id, "batch"):
+            raise RuntimeError(f"Failed to persist upload registry for batch file {batch_file_id}")
 
         # Create the batch job
         job_params = {

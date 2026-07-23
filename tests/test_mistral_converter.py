@@ -3896,7 +3896,7 @@ class TestCleanupUploadRegistry:
 
     def test_register_and_unregister_roundtrip(self, monkeypatch, tmp_path):
         monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
-        mistral_converter._register_uploaded_file("file_abc", "ocr")
+        assert mistral_converter._register_uploaded_file("file_abc", "ocr") is True
         entries = mistral_converter._load_upload_registry()
         assert len(entries) == 1
         assert entries[0]["id"] == "file_abc"
@@ -3905,6 +3905,33 @@ class TestCleanupUploadRegistry:
 
         mistral_converter._unregister_uploaded_file("file_abc")
         assert mistral_converter._load_upload_registry() == []
+
+    def test_registry_scope_deletes_entries_missing_created_at(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        mistral_converter._save_upload_registry([{"id": "no_ts", "purpose": "ocr"}])
+
+        mock_client = MagicMock()
+        count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=7)
+
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="no_ts")
+        assert mistral_converter._load_upload_registry() == []
+
+    def test_register_failure_deletes_remote_ocr_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "IMAGE_EXTENSIONS", set())
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF")
+
+        mock_client = MagicMock()
+        mock_client.files.upload.return_value = MagicMock(id="orphan_id")
+        mock_client.files.get_signed_url.return_value = MagicMock(url="https://signed.example/doc")
+
+        with patch.object(mistral_converter, "_register_uploaded_file", return_value=False):
+            pair = mistral_converter._upload_file_for_ocr_pair(mock_client, pdf)
+
+        assert pair is None
+        mock_client.files.delete.assert_called()
 
 
 class TestProcessWithOcr403Error:
