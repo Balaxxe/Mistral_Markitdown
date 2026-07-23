@@ -2944,6 +2944,21 @@ def submit_batch_ocr_job(
 
         uploaded_id = getattr(batch_data, "id", None)
         if not isinstance(uploaded_id, str) or not uploaded_id:
+            # Early return bypasses the except cleanup; still scrub local JSONL
+            # (signed URLs) and best-effort delete a non-string remote id.
+            try:
+                batch_file_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if uploaded_id is not None:
+                try:
+                    client.files.delete(file_id=str(uploaded_id))
+                except Exception as del_err:
+                    logger.debug(
+                        "Could not delete batch upload with invalid id %r: %s",
+                        uploaded_id,
+                        del_err,
+                    )
             return False, None, "Batch upload response missing file ID"
         batch_file_id = uploaded_id
         logger.info("Batch file uploaded: %s", batch_file_id)

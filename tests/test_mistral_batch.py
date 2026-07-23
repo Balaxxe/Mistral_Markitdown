@@ -263,6 +263,44 @@ class TestSubmitBatchOcrJob:
         mock_client.files.delete.assert_called_once_with(file_id="orphan_upload_id")
         assert not batch_file.exists()
 
+    def test_missing_upload_id_cleans_local_jsonl(self, tmp_path):
+        batch_file = tmp_path / "batch.jsonl"
+        batch_file.write_text('{"body": {}}\n')
+
+        mock_upload = MagicMock(spec=[])  # no id attribute
+
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.files.upload.return_value = mock_upload
+            mock_get.return_value = mock_client
+
+            ok, job_id, err = mistral_converter.submit_batch_ocr_job(batch_file)
+
+        assert ok is False
+        assert job_id is None
+        assert "missing file ID" in (err or "")
+        assert not batch_file.exists()
+        mock_client.files.delete.assert_not_called()
+
+    def test_non_string_upload_id_attempts_remote_cleanup(self, tmp_path):
+        batch_file = tmp_path / "batch.jsonl"
+        batch_file.write_text('{"body": {}}\n')
+
+        mock_upload = MagicMock()
+        mock_upload.id = 12345
+
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.files.upload.return_value = mock_upload
+            mock_get.return_value = mock_client
+
+            ok, job_id, err = mistral_converter.submit_batch_ocr_job(batch_file)
+
+        assert ok is False
+        assert "missing file ID" in (err or "")
+        assert not batch_file.exists()
+        mock_client.files.delete.assert_called_once_with(file_id="12345")
+
 
 # ============================================================================
 # _process_ocr_result_pipeline Tests
