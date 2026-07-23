@@ -9,5 +9,5 @@
   "reportInvalidTypeForm": "warning",
   "reportGeneralTypeIssues": "warning",
   "reportAttributeAccessIssue": "warning",
-  "exclude": ["tests/", "run_tests.py", ".venv/", "env/", "build/", "dist/", "htmlcov/", "scripts/"]
+  "exclude": ["tests/", "run_tests.py", ".venv/", "env/", "build/", "dist/", "htmlcov/"]
 }

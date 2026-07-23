@@ -635,7 +635,7 @@ PDF_IMAGE_USE_PDFTOCAIRO=true
 
 - **Type:** Integer
 - **Default:** `100`
-- **Description:** Cap pages rendered by pdf2image (`0` disables the cap)
+- **Description:** Cap pages rendered by pdf2image (`0` disables the cap). When the cap is enabled, conversion is refused if the page count cannot be determined safely.
 
 ```ini
 PDF_IMAGE_MAX_PAGES=100
@@ -962,11 +962,11 @@ MARKITDOWN_MAX_FILE_SIZE_MB=100
 ### STRICT_INPUT_PATH_RESOLUTION
 
 - **Type:** Boolean
-- **Default:** `true`
-- **Description:** When `true`, `validate_file()` rejects paths whose resolved location lies outside `input/`. Use this to block symlink escapes from a shared inbox. Set `false` for programmatic callers that intentionally pass arbitrary paths (tests do this via monkeypatch).
+- **Default:** `false`
+- **Description:** When `true`, `validate_file()` rejects paths whose resolved location lies outside `input/`. Enable this to block symlink escapes from a shared inbox; leave it disabled for programmatic callers that intentionally pass arbitrary paths.
 
 ```ini
-STRICT_INPUT_PATH_RESOLUTION=true
+STRICT_INPUT_PATH_RESOLUTION=false
 ```
 
 ### CLEANUP_UPLOAD_ALL_CONFIRM
@@ -1136,7 +1136,7 @@ VERBOSE_PROGRESS=true
 | ---------------------------------- | ------ | -------------------- | --------------------------------------------------------------------- | ----------------- |
 | MISTRAL_API_KEY                    | string | -                    | Yes (for smart, mistral_ocr, qna, batch_ocr; optional for markitdown) | API Keys          |
 | MISTRAL_SERVER_URL                 | string | ""                   | No                                                                    | API Keys          |
-| STRICT_INPUT_PATH_RESOLUTION       | bool   | true                 | No                                                                    | Security          |
+| STRICT_INPUT_PATH_RESOLUTION       | bool   | false                | No                                                                    | Security          |
 | MISTRAL_OCR_MODEL                  | string | mistral-ocr-latest   | No                                                                    | OCR               |
 | MISTRAL_INCLUDE_IMAGES             | bool   | true                 | No                                                                    | OCR               |
 | SAVE_MISTRAL_JSON                  | bool   | true                 | No                                                                    | OCR               |

@@ -3,7 +3,6 @@
 These complement heavily mocked pipeline tests by asserting real output files.
 """
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import config
@@ -32,14 +31,16 @@ class TestMarkItDownWritesOutput:
         mock_md.convert.return_value = mock_result
 
         with patch.object(local_converter, "get_markitdown_instance", return_value=mock_md):
-            success, output_path, error = local_converter.convert_with_markitdown(src)
+            success, content, error = local_converter.convert_with_markitdown(src)
 
         assert success is True
         assert error is None
-        assert isinstance(output_path, Path)
+        assert isinstance(content, str)
+        assert "integration hello world" in content
+        output_path = config.OUTPUT_MD_DIR / "note.md"
         assert output_path.exists()
         assert output_path.parent == config.OUTPUT_MD_DIR
-        assert "integration hello world" in output_path.read_text(encoding="utf-8")
+        assert output_path.read_text(encoding="utf-8") == content
 
 
 class TestSmartRoutingSidecarIsolation:

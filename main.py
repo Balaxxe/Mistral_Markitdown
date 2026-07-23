@@ -252,7 +252,9 @@ def _process_single_smart(
 
     if use_ocr:
         return mistral_converter.convert_with_mistral_ocr(file_path)
-    return local_converter.convert_with_markitdown(file_path)
+    success, _content, error = local_converter.convert_with_markitdown(file_path)
+    output_path = config.OUTPUT_MD_DIR / f"{utils.safe_output_stem(file_path)}.md" if success else None
+    return success, output_path, error
 
 
 def mode_convert_smart(file_paths: List[Path]) -> Tuple[bool, str]:
@@ -306,7 +308,7 @@ def mode_convert_smart(file_paths: List[Path]) -> Tuple[bool, str]:
 
 def _process_single_markitdown_with_pdf_tables(
     file_path: Path,
-) -> Tuple[bool, Optional[Path], Optional[str]]:
+) -> Tuple[bool, Optional[str], Optional[str]]:
     """MarkItDown conversion with pdfplumber table sidecars for PDFs (smart-mode parity)."""
     if file_path.suffix.lower().lstrip(".") == "pdf":
         _extract_pdf_tables(file_path)

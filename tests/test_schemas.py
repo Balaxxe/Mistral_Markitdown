@@ -129,10 +129,27 @@ class TestPydanticModelValidation:
         with pytest.raises(Exception):
             schemas.LineItem(description="test")
 
-    def test_invoice_date_accepts_free_form(self):
-        """OCR dates are often non-ISO; schemas accept free-form strings."""
-        details = schemas.InvoiceDetails(invoice_number="1", invoice_date="not-a-date")
-        assert details.invoice_date == "not-a-date"
+    @pytest.mark.parametrize(
+        "build_model",
+        [
+            lambda: schemas.InvoiceDetails(invoice_number="1", invoice_date="not-a-date"),
+            lambda: schemas.InvoiceDetails(invoice_number="1", invoice_date="2024-01-15", due_date="tomorrow"),
+            lambda: schemas.GenericDocument(document_type="report", date="01/15/2024"),
+            lambda: schemas.StatementPeriod(start_date="January", end_date="2024-01-31"),
+            lambda: schemas.StatementPeriod(end_date="not-a-date"),
+            lambda: schemas.ContractDates(effective_date="soon"),
+            lambda: schemas.ContractDates(expiration_date="later"),
+            lambda: schemas.ContractDates(execution_date="yesterday"),
+            lambda: schemas.ContractDates(renewal_date="next year"),
+            lambda: schemas.FormSignature(date="today"),
+            lambda: schemas.FormDates(submission_date="today"),
+            lambda: schemas.FormDates(effective_date="today"),
+            lambda: schemas.FormDates(expiration_date="today"),
+        ],
+    )
+    def test_public_date_fields_reject_non_iso_values(self, build_model):
+        with pytest.raises(Exception):
+            build_model()
 
     def test_invoice_date_accepts_iso_format(self):
         details = schemas.InvoiceDetails(invoice_number="1", invoice_date="2024-01-15")

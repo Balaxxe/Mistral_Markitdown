@@ -15,6 +15,8 @@ from .facade import attr
 from .sdk_shims import httpx
 
 logger = utils.logger
+
+
 def _prepare_batch_entries(
     client: Any,
     file_paths: List[Path],
@@ -109,8 +111,7 @@ def create_batch_ocr_file(
     if model is None:
         model = config.get_ocr_model()
 
-    if include_image_base64 is None:
-        include_image_base64 = config.MISTRAL_INCLUDE_IMAGES
+    resolved_include_images = config.MISTRAL_INCLUDE_IMAGES if include_image_base64 is None else include_image_base64
 
     batch_signed_url_expiry = max(
         config.MISTRAL_SIGNED_URL_EXPIRY,
@@ -121,7 +122,7 @@ def create_batch_ocr_file(
         logger.info("Creating batch OCR file for %s documents...", len(file_paths))
 
         entries, uploaded_file_ids, prep_error = _prepare_batch_entries(
-            client, file_paths, model, include_image_base64, batch_signed_url_expiry
+            client, file_paths, model, resolved_include_images, batch_signed_url_expiry
         )
         if prep_error:
             return False, None, prep_error
@@ -148,7 +149,7 @@ def create_batch_ocr_file(
         return False, None, error_msg
 
 
-def submit_batch_ocr_job(
+def submit_batch_ocr_job(  # noqa: C901
     batch_file_path: Path,
     model: Optional[str] = None,
     metadata: Optional[Dict[str, str]] = None,

@@ -159,7 +159,9 @@ def mode_maintenance() -> Tuple[bool, str]:
     # 2. Clean up old uploaded files from Mistral
     if config.CLEANUP_OLD_UPLOADS and config.MISTRAL_API_KEY:
         scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
-        if scope == "all" and not _confirm_cleanup_upload_all():
+        if scope not in ("registry", "all"):
+            out("  - Skipped upload cleanup (invalid CLEANUP_UPLOAD_SCOPE; expected registry or all)")
+        elif scope == "all" and not _confirm_cleanup_upload_all():
             out("  - Skipped upload cleanup (account-wide scope not confirmed)")
         else:
             try:

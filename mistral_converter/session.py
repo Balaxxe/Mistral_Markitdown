@@ -13,7 +13,7 @@ _session_pages_inflight = 0  # reserved estimate while OCR HTTP call is in fligh
 _session_pages_warned = False
 _session_pages_lock = threading.Lock()
 
-# Local registry of files uploaded to Mistral (scoped cleanup default).
+
 def _estimate_session_pages_for_ocr(file_path: Path, pages: Optional[List[int]]) -> int:
     """Upper-bound page estimate for session budgeting (concurrent-safe reserve).
 
@@ -35,14 +35,17 @@ def _estimate_session_pages_for_ocr(file_path: Path, pages: Optional[List[int]])
             analysis = _lc.analyze_file_content(file_path)
             pc = int(analysis.get("page_count") or 0)
             if pc > 0:
-                if config.MAX_PAGES_PER_SESSION > 0:
-                    return min(pc, config.MAX_PAGES_PER_SESSION)
                 return pc
         except (OSError, ImportError, ValueError):
             pass
-        # Fail closed: unknown page counts reserve a single page so a few
-        # unreadable PDFs cannot exhaust MAX_PAGES_PER_SESSION under concurrency.
-        return 1
+        # Unknown PDFs reserve the entire remaining budget so only one can be
+        # in flight at a time without blocking later sequential work after a
+        # smaller-than-reserved response commits its actual page count.
+        if config.MAX_PAGES_PER_SESSION > 0:
+            with _session_pages_lock:
+                remaining = config.MAX_PAGES_PER_SESSION - _session_pages_processed - _session_pages_inflight
+            return max(1, remaining)
+        return 256
 
     # Office / other non-image non-PDF: conservative estimate from config.
     cap = config.MAX_PAGES_PER_SESSION if config.MAX_PAGES_PER_SESSION > 0 else 256
@@ -65,10 +68,10 @@ def _reserve_session_pages(estimated: int) -> bool:
 def _commit_session_pages(reserved: int, actual: int) -> bool:
     """Release *reserved* inflight credit and commit *actual* processed pages."""
     global _session_pages_processed, _session_pages_inflight, _session_pages_warned
-    if config.MAX_PAGES_PER_SESSION <= 0:
-        return True
     with _session_pages_lock:
-        _session_pages_inflight -= reserved
+        _session_pages_inflight = max(0, _session_pages_inflight - max(0, reserved))
+        if config.MAX_PAGES_PER_SESSION <= 0:
+            return True
         new_total = _session_pages_processed + actual
         _session_pages_processed = new_total
         if new_total >= config.MAX_PAGES_PER_SESSION:
@@ -95,10 +98,10 @@ def _commit_session_pages(reserved: int, actual: int) -> bool:
 def _release_session_pages_reservation(reserved: int) -> None:
     """Return reserved inflight credit when OCR fails before a result exists."""
     global _session_pages_inflight
-    if config.MAX_PAGES_PER_SESSION <= 0 or reserved <= 0:
+    if reserved <= 0:
         return
     with _session_pages_lock:
-        _session_pages_inflight -= reserved
+        _session_pages_inflight = max(0, _session_pages_inflight - reserved)
 
 
 def _is_page_limit_reached() -> bool:
@@ -130,11 +133,17 @@ def reset_session_page_counter() -> None:
     """Reset the session page counter so a new logical session can start fresh.
 
     Useful when embedding the converter in a long-lived process (e.g. a web
-    service) where each request should have its own page budget.
+    service) where each request should have its own page budget. A reset is
+    skipped while OCR work is active so neither committed nor reserved usage
+    can be detached from requests that are still completing.
     """
-    global _session_pages_processed, _session_pages_inflight, _session_pages_warned
+    global _session_pages_processed, _session_pages_warned
     with _session_pages_lock:
+        if _session_pages_inflight > 0:
+            logger.warning(
+                "Session page counter reset skipped while %d page(s) are reserved",
+                _session_pages_inflight,
+            )
+            return
         _session_pages_processed = 0
-        _session_pages_inflight = 0
         _session_pages_warned = False
-

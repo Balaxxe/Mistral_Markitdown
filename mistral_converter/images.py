@@ -186,5 +186,3 @@ def save_extracted_images(ocr_result: Dict[str, Any], file_path: Path) -> List[P
         logger.info("Saved %s extracted images to %s", len(saved_images), image_dir)
 
     return saved_images
-
-

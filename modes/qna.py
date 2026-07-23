@@ -178,6 +178,7 @@ def mode_document_qna(
     utils.ui_print("Type 'exit' or 'quit' to return to menu.\n")
 
     questions_asked = 0
+    questions_failed = 0
     while True:  # pragma: no cover
         try:
             question = input("Question: ").strip()
@@ -188,12 +189,16 @@ def mode_document_qna(
             if ok:
                 questions_asked += 1
             else:
+                questions_failed += 1
                 utils.ui_print(f"\nError: {qmsg}\n")
 
-        except KeyboardInterrupt:
+        except (EOFError, KeyboardInterrupt):
             break
 
     label = display_name if url_mode else (file_path.name if file_path else "document")
-    if questions_asked == 0:
-        return False, f"Asked 0 question(s) about {label}"
+    if questions_failed:
+        return (
+            False,
+            f"Asked {questions_asked} question(s) successfully; {questions_failed} failed about {label}",
+        )
     return True, f"Asked {questions_asked} question(s) about {label}"

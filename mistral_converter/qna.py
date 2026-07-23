@@ -236,5 +236,3 @@ def query_document_file(
 # Batch OCR Processing (NEW - from updated Mistral docs)
 # Process multiple documents at reduced cost using Batch API
 # ============================================================================
-
-

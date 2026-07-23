@@ -4,6 +4,9 @@ Enhanced Document Converter - Mistral AI Integration Package
 Facade module preserving ``import mistral_converter`` for callers and tests.
 """
 
+import importlib
+
+from . import sdk_shims as _sdk_shims
 from .batch import (
     create_batch_ocr_file,
     download_batch_results,
@@ -54,23 +57,6 @@ from .schemas_fmt import (
     get_document_annotation_format,
     mistral_ocr_cache_contract_matches,
 )
-import importlib
-
-from . import sdk_shims as _sdk_shims
-
-# Reload shims whenever this package is reloaded so import-fallback tests that
-# block mistralai/PIL and call importlib.reload(mistral_converter) see None.
-_sdk_shims = importlib.reload(_sdk_shims)
-DocumentURLChunk = _sdk_shims.DocumentURLChunk
-FileChunk = _sdk_shims.FileChunk
-Image = _sdk_shims.Image
-ImageURLChunk = _sdk_shims.ImageURLChunk
-Mistral = _sdk_shims.Mistral
-httpx = _sdk_shims.httpx
-models = _sdk_shims.models
-response_format_from_pydantic_model = _sdk_shims.response_format_from_pydantic_model
-retries = _sdk_shims.retries
-urlparse = _sdk_shims.urlparse
 from .session import (
     _commit_session_pages,
     _estimate_session_pages_for_ocr,
@@ -97,6 +83,26 @@ from .url_validation import (
     is_signed_url_expiry_error,
     validate_https_document_url,
 )
+
+# Reload shims whenever this package is reloaded so import-fallback tests that
+# block mistralai/PIL and call importlib.reload(mistral_converter) see None.
+_sdk_shims = importlib.reload(_sdk_shims)
+DocumentURLChunk = _sdk_shims.DocumentURLChunk
+FileChunk = _sdk_shims.FileChunk
+Image = _sdk_shims.Image
+ImageURLChunk = _sdk_shims.ImageURLChunk
+Mistral = _sdk_shims.Mistral
+httpx = _sdk_shims.httpx
+models = _sdk_shims.models
+response_format_from_pydantic_model = _sdk_shims.response_format_from_pydantic_model
+retries = _sdk_shims.retries
+urlparse = _sdk_shims.urlparse
+
+# Re-executing the former single-file module naturally rebuilt this mutable
+# state. Preserve that behavior now that the implementation lives in cached
+# submodules. The session reset refuses to clear active reservations.
+reset_mistral_client()
+reset_session_page_counter()
 
 __all__ = [
     "get_mistral_client",

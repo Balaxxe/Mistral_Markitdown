@@ -132,9 +132,9 @@ class InvoiceDetails(_BaseSchema):
     """Invoice details for extraction."""
 
     invoice_number: str = Field(..., description="Invoice number")
-    invoice_date: str = Field(..., description="Invoice date (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)")
+    invoice_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", description="Invoice date (ISO 8601, YYYY-MM-DD)")
     due_date: Optional[str] = Field(
-        None, description="Payment due date (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Payment due date (ISO 8601, YYYY-MM-DD)"
     )
     purchase_order: Optional[str] = Field(None, description="PO number if applicable")
 
@@ -186,7 +186,7 @@ class GenericDocument(_BaseSchema):
     title: Optional[str] = Field(None, description="Document title")
     authors: Optional[List[str]] = Field(None, description="Document authors or creators")
     date: Optional[str] = Field(
-        None, description="Document date (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Document date (ISO 8601, YYYY-MM-DD)"
     )
     sections: Optional[List[DocumentSection]] = Field(None, description="Document sections and headings")
     summary: Optional[str] = Field(None, description="Brief document summary")
@@ -205,9 +205,9 @@ class StatementPeriod(_BaseSchema):
     """Reporting period for financial statement extraction."""
 
     start_date: Optional[str] = Field(
-        None, description="Period start (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Period start (ISO 8601, YYYY-MM-DD)"
     )
-    end_date: str = Field(..., description="Period end (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)")
+    end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", description="Period end (ISO 8601, YYYY-MM-DD)")
     fiscal_year: Optional[int] = Field(None, description="Fiscal year")
 
 
@@ -261,16 +261,16 @@ class ContractDates(_BaseSchema):
     """Key dates in a contract."""
 
     effective_date: Optional[str] = Field(
-        None, description="Date the contract takes effect (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date the contract takes effect (ISO 8601, YYYY-MM-DD)"
     )
     expiration_date: Optional[str] = Field(
-        None, description="Date the contract expires (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date the contract expires (ISO 8601, YYYY-MM-DD)"
     )
     execution_date: Optional[str] = Field(
-        None, description="Date the contract was signed (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date the contract was signed (ISO 8601, YYYY-MM-DD)"
     )
     renewal_date: Optional[str] = Field(
-        None, description="Next renewal date if applicable (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Next renewal date if applicable (ISO 8601, YYYY-MM-DD)"
     )
 
 
@@ -315,7 +315,7 @@ class FormSignature(_BaseSchema):
 
     signer_name: Optional[str] = Field(None, description="Name of the signer")
     title: Optional[str] = Field(None, description="Title or role of the signer")
-    date: Optional[str] = Field(None, description="Date signed (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)")
+    date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date signed (ISO 8601, YYYY-MM-DD)")
     is_signed: Optional[bool] = Field(None, description="Whether the field has been signed")
 
 
@@ -323,13 +323,13 @@ class FormDates(_BaseSchema):
     """Key dates in a form document."""
 
     submission_date: Optional[str] = Field(
-        None, description="Date submitted (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date submitted (ISO 8601, YYYY-MM-DD)"
     )
     effective_date: Optional[str] = Field(
-        None, description="Date effective (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date effective (ISO 8601, YYYY-MM-DD)"
     )
     expiration_date: Optional[str] = Field(
-        None, description="Date of expiration (prefer ISO 8601 YYYY-MM-DD; other date forms accepted)"
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Date of expiration (ISO 8601, YYYY-MM-DD)"
     )
 
 

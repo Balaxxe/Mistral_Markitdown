@@ -163,7 +163,7 @@ def reset_markitdown_instance() -> None:
 
 def convert_with_markitdown(
     file_path: Path,
-) -> Tuple[bool, Optional[Path], Optional[str]]:
+) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Convert a file using MarkItDown.
 
@@ -171,8 +171,7 @@ def convert_with_markitdown(
         file_path: Path to file to convert
 
     Returns:
-        Tuple of (success, output_path, error_message). On success ``output_path``
-        is the written Markdown file under ``config.OUTPUT_MD_DIR``.
+        Tuple of (success, markdown_content, error_message)
     """
     # Enforce file size limit
     try:
@@ -238,7 +237,7 @@ def convert_with_markitdown(
                     file_path.name,
                 )
 
-            return True, output_path, None
+            return True, full_content, None
 
         else:
             return False, None, "No content returned from MarkItDown"
@@ -770,16 +769,26 @@ def convert_pdf_to_images(
         if dpi is None:
             dpi = config.PDF_IMAGE_DPI
 
-        if thread_count is None:
-            thread_count = config.PDF_IMAGE_THREAD_COUNT
+        resolved_thread_count = int(config.PDF_IMAGE_THREAD_COUNT if thread_count is None else thread_count)
 
         max_pages = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
         if max_pages > 0:
             try:
                 analysis = analyze_file_content(pdf_path)
                 page_count = int(analysis.get("page_count") or 0)
-            except (OSError, ValueError, TypeError):
+            except Exception as e:
+                logger.warning("Could not determine page count for %s: %s", pdf_path.name, e)
                 page_count = 0
+            if page_count <= 0:
+                return (
+                    False,
+                    [],
+                    (
+                        "Unable to determine PDF page count; refusing conversion "
+                        f"because PDF_IMAGE_MAX_PAGES is {max_pages}. Set the limit "
+                        "to 0 only if unbounded rendering is intentional."
+                    ),
+                )
             if page_count > max_pages:
                 return (
                     False,
@@ -807,15 +816,11 @@ def convert_pdf_to_images(
             "output_folder": str(output_dir),
             "fmt": config.PDF_IMAGE_FORMAT,
             "poppler_path": poppler_path,
-            "thread_count": max(1, thread_count),
+            "thread_count": max(1, resolved_thread_count),
             "use_pdftocairo": config.PDF_IMAGE_USE_PDFTOCAIRO,
             "output_file": "page",
             "paths_only": True,
         }
-        if max_pages > 0:
-            # pdf2image: last_page is inclusive; cap rendering even if page_count
-            # analysis failed (page_count == 0).
-            convert_params["last_page"] = max_pages
 
         # Convert PDF to images directly on disk
         temp_paths = convert_from_path(**convert_params)

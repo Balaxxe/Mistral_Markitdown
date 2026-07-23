@@ -4,13 +4,13 @@ import json
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import config
 import utils
 
-from .sdk_shims import Mistral
 from .facade import attr
+from .sdk_shims import Mistral
 
 logger = utils.logger
 _UPLOAD_REGISTRY_LOCK = threading.Lock()
@@ -83,6 +83,11 @@ def _unregister_uploaded_file(file_id: str) -> None:
 
 def _parse_registry_created_at(value: Any) -> Optional[datetime]:
     """Parse a registry created_at value into an aware UTC datetime."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
@@ -114,27 +119,32 @@ def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> i
     Returns:
         Number of files deleted
     """
-    if days_old is None:
-        days_old = config.UPLOAD_RETENTION_DAYS
+    retention_days = config.UPLOAD_RETENTION_DAYS if days_old is None else days_old
 
     try:
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
         scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
 
         if scope == "registry":
             deleted = _cleanup_registry_scoped(client, cutoff_date)
-        else:
+        elif scope == "all":
             deleted_ids: List[str] = []
             deleted = _cleanup_files_by_purpose(client, "ocr", cutoff_date, deleted_ids)
             deleted += _cleanup_files_by_purpose(client, "batch", cutoff_date, deleted_ids)
             for fid in deleted_ids:
                 _unregister_uploaded_file(fid)
+        else:
+            logger.warning(
+                "Refusing upload cleanup for invalid CLEANUP_UPLOAD_SCOPE=%r; expected 'registry' or 'all'",
+                scope,
+            )
+            return 0
 
         if deleted > 0:
             logger.info(
                 "Cleaned up %s old uploaded files (older than %s days, scope=%s)",
                 deleted,
-                days_old,
+                retention_days,
                 scope,
             )
 
@@ -178,7 +188,7 @@ def _cleanup_registry_scoped(client: Mistral, cutoff_date: datetime) -> int:
 
 def _cleanup_files_by_purpose(
     client: Mistral,
-    purpose: str,
+    purpose: Literal["ocr", "batch"],
     cutoff_date: datetime,
     deleted_ids: List[str],
 ) -> int:
@@ -190,7 +200,8 @@ def _cleanup_files_by_purpose(
     while True:
         try:
             files_response = client.files.list(purpose=purpose, page=page, page_size=page_size)
-            files_list = files_response.data if hasattr(files_response, "data") else files_response
+            raw_files: Any = files_response.data if hasattr(files_response, "data") else files_response
+            files_list: List[Any] = list(raw_files) if raw_files is not None else []
         except Exception as e:
             logger.debug(
                 "Error listing %s files for cleanup (page %s): %s",
@@ -208,13 +219,8 @@ def _cleanup_files_by_purpose(
                 if not hasattr(file, "created_at"):
                     continue
 
-                if isinstance(file.created_at, str):
-                    file_created = datetime.fromisoformat(file.created_at.replace("Z", "+00:00"))
-                elif hasattr(file.created_at, "replace"):
-                    file_created = file.created_at
-                    if file_created.tzinfo is None:
-                        file_created = file_created.replace(tzinfo=timezone.utc)
-                else:
+                file_created = _parse_registry_created_at(file.created_at)
+                if file_created is None:
                     logger.debug(
                         "Unexpected created_at type for file %s: %s",
                         file.id,
@@ -382,5 +388,3 @@ def _cleanup_temp_files(temp_files: List[Path]) -> None:
                 logger.debug("Deleted temporary file: %s", temp_file.name)
         except Exception as e:
             logger.warning("Could not delete temporary file %s: %s", temp_file.name, e)
-
-

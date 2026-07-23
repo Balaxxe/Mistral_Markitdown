@@ -21,6 +21,7 @@ from .session import (
     _release_session_pages_reservation,
     _reserve_session_pages,
 )
+
 logger = utils.logger
 
 
@@ -80,7 +81,7 @@ def _prepare_ocr_document(
     return document, signed_url
 
 
-def process_with_ocr(
+def process_with_ocr(  # noqa: C901
     client: Mistral,
     file_path: Path,
     model: Optional[str] = None,
@@ -1043,4 +1044,3 @@ def _create_markdown_output(file_path: Path, ocr_result: Dict[str, Any]) -> Path
 # Document QnA (NEW - from updated Mistral docs)
 # Query documents using chat.complete with document_url content type
 # ============================================================================
-

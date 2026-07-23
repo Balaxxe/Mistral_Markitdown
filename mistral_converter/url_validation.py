@@ -213,5 +213,3 @@ def validate_https_document_url(
 ) -> Tuple[bool, Optional[str]]:
     """Public SSRF-safe HTTPS URL check for Document QnA."""
     return _validate_document_url(url, strict_dns=strict_dns)
-
-

@@ -95,7 +95,7 @@ Batch job IDs entered interactively are validated against `^[a-zA-Z0-9_\-]{1,128
 
 ### Input Path Confinement
 
-`STRICT_INPUT_PATH_RESOLUTION` defaults to `true`: `utils.validate_file` rejects paths (including symlink escapes) that resolve outside `input/`. Set it to `false` only for programmatic callers that intentionally pass arbitrary paths.
+`STRICT_INPUT_PATH_RESOLUTION` defaults to `false` for compatibility with programmatic callers that pass arbitrary paths. Enable it for shared inboxes so `utils.validate_file` rejects paths (including symlink escapes) that resolve outside `input/`.
 
 ### Account-wide upload cleanup
 
@@ -118,7 +118,7 @@ The following limits prevent runaway API spend and resource exhaustion:
 | `MISTRAL_QNA_MAX_FILE_SIZE_MB` | 50      | Hard reject before Document QnA upload          |
 | `MAX_BATCH_FILES`              | 100     | Hard reject in smart, MarkItDown, OCR, PDF→images, and batch modes |
 | `MAX_PAGES_PER_SESSION`        | 1000    | Hard reject (refuses further OCR after limit)   |
-| `PDF_IMAGE_MAX_PAGES`          | 100     | Cap pages rendered by local pdf2image (`0` = unlimited) |
+| `PDF_IMAGE_MAX_PAGES`          | 100     | Cap local pdf2image rendering and reject unknown page counts (`0` = unlimited) |
 | `MAX_CONCURRENT_FILES`         | 5       | Thread pool cap for parallel processing         |
 | `MISTRAL_BATCH_TIMEOUT_HOURS`  | 24      | Batch job auto-cancellation                     |
 | `UPLOAD_RETENTION_DAYS`        | 7       | Auto-cleanup of uploaded files on Mistral       |

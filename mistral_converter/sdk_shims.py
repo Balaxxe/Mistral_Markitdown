@@ -1,7 +1,8 @@
 """Mistral SDK imports and test-compat shims."""
 
-from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse as _urlparse
+
+urlparse = _urlparse
 
 try:
     from mistralai.client import Mistral

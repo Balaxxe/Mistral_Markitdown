@@ -179,7 +179,7 @@ def _filename_has_keyword(name: str, keywords: List[str]) -> bool:
     return any(re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", name) for keyword in keywords)
 
 
-def classify_document_type(file_path: Path) -> str:
+def classify_document_type(file_path: Path) -> str:  # noqa: C901
     """Classify document type into generic, invoice, financial_statement, contract, or form.
 
     Uses a hybrid approach:
@@ -401,5 +401,3 @@ def mistral_ocr_cache_contract_matches(stored: Any, current: Dict[str, Any]) -> 
         if stored.get(key) != val:
             return False
     return True
-
-
