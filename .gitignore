@@ -37,6 +37,10 @@ docs/_build/
 # Only ignore local env files
 .env.mcp.local
 
+# Claude Code — local/personal; do not commit
+.claude/
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db
