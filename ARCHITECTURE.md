@@ -59,7 +59,7 @@ flowchart TD
 | `utils.py`             | Logging, caching (SHA-256 + TTL), table formatting, file validation, YAML frontmatter        |
 | `schemas.py`           | Pydantic models and JSON schemas for structured extraction (invoices, contracts, etc.)       |
 | `local_converter.py`   | MarkItDown wrapper, low-quality output detection, PDF table extraction, PDF to images        |
-| `mistral_converter/`   | Mistral package: client, upload, OCR, QnA, batch, SSRF validation, image optimization (`import mistral_converter`) |
+| `mistral_converter/`   | Mistral package: client, upload, OCR, QnA, batch, image optimization, SSRF-safe URL validation (`url_validation.py`), and OCR response-budget enforcement (`resource_limits.py`) (`import mistral_converter`) |
 | `main.py`              | CLI entry point, smart routing, concurrent processing, interactive menu, system status       |
 | `cli_files.py`         | Input directory listing, validation, and interactive file selection                          |
 
@@ -68,9 +68,10 @@ flowchart TD
 1. **Input** — User provides file path, URL, or directory. Dotfiles (`.gitkeep`, `.DS_Store`) are silently excluded from input scanning.
 2. **Routing** — Smart router analyzes content to pick the best engine
 3. **Conversion** — Selected engine produces Markdown. When MarkItDown processes image or PDF inputs that yield minimal text, a warning is logged suggesting Mistral OCR.
-4. **Caching** — Results cached by SHA-256 content hash (24h TTL)
-5. **Post-processing** — Optional pdfplumber table extraction on local/PDF paths. Bbox/document structured fields are returned by the **Mistral OCR** call when enabled (not a separate post-pass on markdown). **Document QnA** is a separate mode (chat over a document URL), not an automatic follow-up to conversion.
-6. **Output** — Markdown saved to `output_md/`, plain text to `output_txt/`
+4. **Security boundaries** — Mistral document URLs are validated against private/internal network targets before use, and untrusted OCR responses are checked against local page, table, image, and aggregate text budgets.
+5. **Caching** — Results cached by SHA-256 content hash (24h TTL)
+6. **Post-processing** — Optional pdfplumber table extraction on local/PDF paths. Bbox/document structured fields are returned by the **Mistral OCR** call when enabled (not a separate post-pass on markdown). **Document QnA** is a separate mode (chat over a document URL), not an automatic follow-up to conversion.
+7. **Output** — Markdown saved to `output_md/`, plain text to `output_txt/`
 
 ## Output Naming
 
@@ -90,4 +91,4 @@ System Status mode (`--mode status` or `--test`) reports:
 
 ## Batch OCR
 
-Batch mode submits 10+ documents to Mistral Batch API at reduced cost. After submission, the CLI emits a machine-readable `BATCH_JOB_ID=<id>` line for automation and scripting, in addition to the human-readable confirmation message.
+Batch mode can submit any nonempty document selection to the Mistral Batch API. It is most cost-effective with 10+ documents by default; adjust `MISTRAL_BATCH_MIN_FILES` to change that advisory threshold. After submission, the CLI emits a machine-readable `BATCH_JOB_ID=<id>` line for automation and scripting, in addition to the human-readable confirmation message.

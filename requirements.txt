@@ -1,5 +1,5 @@
 # Enhanced Document Converter - Core Dependencies
-# For optional features (audio, YouTube, Azure, LLM OCR plugin): see requirements-optional.txt
+# For optional features (audio, YouTube, LLM OCR plugin): see requirements-optional.txt
 # For development (pytest, linters): see requirements-dev.txt
 
 # Core: MarkItDown with all optional format dependencies
@@ -22,5 +22,4 @@ pdfplumber==0.11.10
 
 # PDF to image conversion (requires Poppler system binary)
 pdf2image==1.17.0
-
 

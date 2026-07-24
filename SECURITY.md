@@ -12,7 +12,7 @@
 If you discover a security vulnerability, please report it responsibly:
 
 1. **Do not** open a public GitHub issue for security vulnerabilities.
-2. Email the maintainers or use [GitHub Security Advisories](https://github.com/jaim12005/Mistral_Markitdown/security/advisories/new) to report privately.
+2. Email the maintainers or use [GitHub Security Advisories](https://github.com/Balaxxe/Mistral_Markitdown/security/advisories/new) to report privately.
 3. Include steps to reproduce, impact assessment, and any suggested fixes.
 4. You will receive an acknowledgment within 48 hours and a detailed response within 7 days.
 
@@ -25,7 +25,7 @@ If you discover a security vulnerability, please report it responsibly:
 | Boundary                        | Examples                                                                                                                                                                      |
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Attacker-controlled inputs**  | Document files in `input/` or passed programmatically; document URLs for QnA; content returned by Mistral OCR/QnA; streams passed to `convert_stream_with_markitdown`.        |
-| **Operator-controlled inputs**  | `.env` configuration, API keys, feature flags (plugins, structured output, image extraction), external binary paths (Poppler/Ghostscript), batch/job IDs, and file selection. |
+| **Operator-controlled inputs**  | `.env` configuration, API keys, feature flags (plugins, structured output, image extraction), external binary paths (Poppler), batch/job IDs, and file selection.             |
 | **Developer-controlled inputs** | Source code, tests, build scripts, dependency versions.                                                                                                                       |
 
 ### Assumptions
@@ -61,7 +61,7 @@ Document conversion depends on MarkItDown, pdfplumber, Poppler (pdf2image), and 
 - **MarkItDown path:** Files exceeding `MARKITDOWN_MAX_FILE_SIZE_MB` (default: 100 MB) are rejected.
 - **Mistral OCR path:** Files exceeding `MISTRAL_OCR_MAX_FILE_SIZE_MB` (default: 200 MB) are rejected before upload.
 - **Document QnA:** Files exceeding `MISTRAL_QNA_MAX_FILE_SIZE_MB` (default: 50 MB) are rejected.
-- **PDF table extraction and PDF-to-images:** Skipped when the PDF exceeds `max(MARKITDOWN_MAX_FILE_SIZE_MB, MISTRAL_OCR_MAX_FILE_SIZE_MB)` (see `config.pdf_heavy_work_max_file_size_mb()` / `utils.pdf_exceeds_heavy_work_limit`) to avoid expensive local work on files that would fail size checks on the conversion path.
+- **PDF table extraction and PDF-to-images:** In the CLI pipeline, skipped when the PDF exceeds `max(MARKITDOWN_MAX_FILE_SIZE_MB, MISTRAL_OCR_MAX_FILE_SIZE_MB)` (see `config.pdf_heavy_work_max_file_size_mb()` / `utils.pdf_exceeds_heavy_work_limit`) to avoid expensive local work on files that would fail size checks on the conversion path.
 - **ZIP and EPUB:** Local conversion is disabled until MarkItDown archive traversal can enforce shared decompressed-byte, member-count, and nesting-depth budgets.
 
 ### File Upload Security
@@ -129,11 +129,12 @@ The following limits prevent runaway API spend and resource exhaustion:
 | `MISTRAL_BATCH_TIMEOUT_HOURS`  | 24      | Batch job auto-cancellation                     |
 | `UPLOAD_RETENTION_DAYS`        | 7       | Auto-cleanup of uploaded files on Mistral       |
 
-Additional fixed safety ceilings bound OCR table expansion (10 MiB per page and 50 MiB aggregate text), extracted
-OCR images (100 images, 7 MiB each, and 50 MiB aggregate decoded data), batch input (1 GiB aggregate), and batch
-result downloads (512 MiB). Batch downloads require an unconsumed streaming SDK response; eager compatibility
-payloads are rejected because they cannot be bounded before allocation. Limit violations fail before publishing
-the affected output set.
+Additional fixed safety ceilings bound OCR page text (10 MiB per page and 50 MiB aggregate), tables (256 per page,
+4,096 replacements per page, 8 MiB content per table, and 10 MiB aggregate table content), and extracted images
+(100 images; 10 MiB encoded and 7 MiB decoded per image; 50 MiB aggregate decoded data). Batch input is capped at
+1 GiB aggregate and result downloads at 512 MiB. Batch downloads require an unconsumed streaming SDK response;
+eager compatibility payloads are rejected because they cannot be bounded before allocation. OCR text is revalidated
+after weak-page improvement, and all limit violations fail before the affected output set is published.
 
 ---
 
@@ -267,5 +268,5 @@ Keep these libraries up to date. In containerized deployments, use read-only fil
 - Keep dependencies up to date (`pip install --upgrade -r requirements.txt`).
 - Run `make check` before deploying changes (includes linting and tests).
 - Use the principle of least privilege for API keys -- only grant OCR access if that is all you need.
-- Monitor the [GitHub Security Advisories](https://github.com/jaim12005/Mistral_Markitdown/security) page for updates.
+- Monitor the [GitHub Security Advisories](https://github.com/Balaxxe/Mistral_Markitdown/security) page for updates.
 - Review the `validate_configuration()` output at startup for security warnings (plugins enabled, data URIs preserved, long signed URL expiry).

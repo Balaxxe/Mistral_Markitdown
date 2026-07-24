@@ -9,7 +9,7 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 
 - Install: `pip install -r requirements.txt`
 - Install dev: `pip install -r requirements.txt && pip install -r requirements-dev.txt`
-- Test all: `python3 -m pytest tests/` (~720 tests, ~15s) after dev install, or `bash scripts/test-safe.sh`, or `python3 run_tests.py` (bootstraps `./env` + dev deps if pytest is missing)
+- Test all: `python3 -m pytest tests/` after dev install, or `bash scripts/test-safe.sh`, or `python3 run_tests.py` (bootstraps `./env` + dev deps if pytest is missing)
 - Test single file: `python3 -m pytest tests/test_<name>.py -v`
 - Lint: `python3 -m flake8 .`
 - Format: `python3 -m black . && python3 -m isort .`
@@ -50,7 +50,7 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 - Python: 3.10, 3.11, or 3.12
 - System deps: `poppler-utils` (needed by pdf2image)
 - Setup: `pip install -r requirements.txt && pip install -r requirements-dev.txt`
-- Config: copy `.env.example` to `.env`, set `MISTRAL_API_KEY` (optional — without it, only local MarkItDown works)
+- Config: copy `.env.example` to `.env`; `MISTRAL_API_KEY` is optional for local conversion and non-cloud modes
 
 ## Debugging
 
@@ -60,7 +60,8 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 
 ## Gotchas
 
-- `MISTRAL_API_KEY` is optional. Without it, only local MarkItDown conversion works; all Mistral OCR/QnA/Batch features are disabled.
+- `MISTRAL_API_KEY` is optional. Without it, Smart mode falls back to local MarkItDown; PDF-to-images, System Status,
+  and Maintenance remain available. Mistral OCR/QnA/Batch features are disabled.
 - The `Makefile` and `scripts/test-safe.sh` reference a local `env/` virtualenv. In cloud or CI environments, run tools via `python3 -m <tool>`.
 - Pre-existing lint warnings exist in test files (unused imports, unused variables); these are in the upstream code.
 - flake8 config is in `.flake8` (120 char line length, black-compatible ignores). pytest config is in `pyproject.toml`.

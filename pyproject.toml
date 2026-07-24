@@ -55,11 +55,11 @@ dev = [
 mistral-markitdown = "main:main"
 
 [project.urls]
-Homepage = "https://github.com/jaim12005/Mistral_Markitdown"
-Repository = "https://github.com/jaim12005/Mistral_Markitdown"
-Issues = "https://github.com/jaim12005/Mistral_Markitdown/issues"
-Documentation = "https://github.com/jaim12005/Mistral_Markitdown/blob/main/CONFIGURATION.md"
-Changelog = "https://github.com/jaim12005/Mistral_Markitdown/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/Balaxxe/Mistral_Markitdown"
+Repository = "https://github.com/Balaxxe/Mistral_Markitdown"
+Issues = "https://github.com/Balaxxe/Mistral_Markitdown/issues"
+Documentation = "https://github.com/Balaxxe/Mistral_Markitdown/blob/main/CONFIGURATION.md"
+Changelog = "https://github.com/Balaxxe/Mistral_Markitdown/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 py-modules = ["main", "config", "schemas", "local_converter", "utils", "cli_files", "run_tests"]

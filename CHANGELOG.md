@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `utils.mistral_ocr_size_error()` centralises the OCR file-size check shared by `utils.validate_file` and `mistral_converter._validate_file_for_ocr`
 - `mistral_converter.is_signed_url_expiry_error()` classifier replaces the old substring-based QnA retry heuristic and is exported for reuse
 - In-process cache for `local_converter.analyze_file_content` keyed on `(resolved_path, mtime_ns, size)` so smart-mode routing no longer re-opens the same PDF twice
-- Module-level `_dns_executor` reused by `_resolve_and_validate_dns` (no more per-validation ThreadPoolExecutor)
+- Bounded, killable DNS-resolution subprocesses so timed-out lookups do not occupy resolver workers indefinitely
+- Private response-resource ceilings for OCR text/tables/images, batch input/downloads, and MarkItDown streams
 - New test files `tests/test_mistral_url_validation.py`, `tests/test_mistral_qna.py`, `tests/test_mistral_batch.py` split from the 4,250-line `tests/test_mistral_converter.py`
 - `TestValidateArgsScenarios`, `TestBatchNoFilesCliScenarios`, `TestQnaCliScenarios` in `tests/test_pipeline.py` exercising argparse rejection paths and non-interactive edge cases
 - `TestIsSignedUrlExpiryError`, `TestToConversionResult`, `TestMistralOcrSizeError` unit tests for the new helpers (23 test additions total)
@@ -50,7 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - QnA retry no longer substring-matches error text: `modes.qna.mode_document_qna` calls `mistral_converter.is_signed_url_expiry_error()` which rejects permanent-auth hints before checking signed-URL expiry tokens
 - `schemas.py` now reuses `utils.logger` instead of wiring its own `logging.getLogger("document_converter")`
 - `.flake8` per-file ignores tightened: `main.py` no longer needs `C901`; new split test files covered by file-scoped `F401,W391`
-- Test count: 787 (up from ~723)
+- ZIP and EPUB local conversion are rejected until decompression-byte, member-count, and nesting-depth budgets are available
+- PDF image and table processing fail closed when page counts are unavailable or exceed the configured cap; derived-image temporary files are cache-owned
 
 ### Fixed
 
@@ -64,6 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OCR response parsing and batch API errors now emit full tracebacks for unexpected failures instead of a truncated one-line `logger.error`
 - Upload cleanup fails closed for unknown scopes and accepts integer Unix timestamps returned by the Files API
 - Package reloads invalidate the cached Mistral client and reset idle session accounting without discarding active reservations
+- Batch result streams are closed even when output-directory or temporary-file setup fails
+- OCR results are revalidated after weak-page improvement before images, cache entries, or Markdown are published
+- CSV table sidecars neutralize spreadsheet formulas; DNS lookup timeouts can be terminated cleanly
 
 ### Documentation
 

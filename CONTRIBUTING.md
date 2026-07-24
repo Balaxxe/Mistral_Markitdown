@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Enhanced Document Converter! This
 
 ### Prerequisites
 
-- Python 3.10 or higher
+- Python 3.10 or higher (CI-tested on Python 3.10–3.12)
 - Git
 - Virtual environment tool (venv, virtualenv, or conda)
 
@@ -180,7 +180,7 @@ Common fixtures are available in `tests/conftest.py`:
 ```
 Mistral_Markitdown/
 ├── main.py                  # Main application entry point: Convert (Smart), Convert (MarkItDown), Convert (Mistral OCR), PDF to Images, Document QnA, Batch OCR, System Status
-├── config.py                # Configuration management (90+ options)
+├── config.py                # Configuration loading, defaults, and validation
 ├── cli_files.py             # Input discovery, validation, and selection
 ├── local_converter.py       # MarkItDown integration & table extraction
 ├── mistral_converter/       # Mistral client, upload, OCR, QnA, batch, URL validation, and image helpers
@@ -211,7 +211,9 @@ Mistral_Markitdown/
 │   ├── test_local_converter.py    # Local converter tests
 │   ├── test_mistral_converter.py  # OCR, client, upload, image, and schema-format helper tests
 │   ├── test_mistral_batch.py      # Batch API tests
+│   ├── test_mistral_image_limits.py # Mistral OCR image-admission limit tests
 │   ├── test_mistral_qna.py        # Document QnA tests
+│   ├── test_mistral_resource_limits.py # OCR response resource-budget tests
 │   ├── test_mistral_url_validation.py # URL and SSRF validation tests
 │   ├── test_integration_markitdown.py # On-disk MarkItDown integration tests
 │   ├── test_pipeline.py     # End-to-end pipeline tests
@@ -274,9 +276,12 @@ python3 -m pytest tests/test_utils.py::TestClassName::test_method_name -v -s
 ### Updating Dependencies
 
 ```bash
-# Update requirements
-pip install --upgrade package-name
-pip freeze > requirements.txt
+# Edit the relevant curated requirement constraint(s) in requirements*.txt.
+# Do not replace the files with a full environment freeze.
+
+# Reinstall the curated dependency sets
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # Test with new versions
 make check
@@ -345,7 +350,7 @@ pre-commit run --all-files
 - **Docstrings:** Google format (see `mistral_converter/` for examples)
 - **Commit messages:** Follow [Conventional Commits](https://www.conventionalcommits.org/) — `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`
 - **Test coverage:** Maintain 75%+ overall coverage; add tests for all new features
-- **PR requirements:** All PRs must pass `make check` (lint + tests) before merge
+- **PR requirements:** All PRs must pass `make check` (lint + type checking + tests) before merge
 - **Type hints:** Required for all function signatures
 - **Logging:** Use lazy `%`-formatting (`logger.info("Processing %s", name)`) instead of f-strings
 
@@ -373,8 +378,6 @@ By contributing, you agree that your contributions will be licensed under the sa
 ---
 
 Thank you for contributing to Enhanced Document Converter!
-
-**Version:** 3.0.2
 
 **Related Documentation:**
 
