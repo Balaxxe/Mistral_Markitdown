@@ -1,8 +1,8 @@
 # Enhanced Document Converter
 
-![Tests](https://github.com/jaim12005/Mistral_Markitdown/actions/workflows/test.yml/badge.svg)
-![Linting](https://github.com/jaim12005/Mistral_Markitdown/actions/workflows/lint.yml/badge.svg)
-![Security](https://github.com/jaim12005/Mistral_Markitdown/actions/workflows/security.yml/badge.svg)
+![Tests](https://github.com/Balaxxe/Mistral_Markitdown/actions/workflows/test.yml/badge.svg)
+![Linting](https://github.com/Balaxxe/Mistral_Markitdown/actions/workflows/lint.yml/badge.svg)
+![Security](https://github.com/Balaxxe/Mistral_Markitdown/actions/workflows/security.yml/badge.svg)
 ![Coverage](https://img.shields.io/badge/coverage-75%25%2B%20gated-brightgreen)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -13,9 +13,10 @@ A document conversion system combining Microsoft **MarkItDown** (local) with **M
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10+ (CI-tested on Python 3.10-3.12)
 - Mistral API key (optional — only needed for cloud OCR/QnA/Batch features): https://console.mistral.ai/api-keys/
-  - Without a key, local MarkItDown conversion (mode 2) and PDF-to-images (mode 4) work fully.
+  - Without a key, smart mode falls back to local conversion; MarkItDown, PDF-to-images, status, and maintenance
+    remain available.
   - A valid API key is enough for single-file OCR and Document QnA.
   - Batch OCR additionally requires Mistral AI Studio Scale / paid access. A valid key alone is not enough.
   - If batch submit still returns free-trial / 402 messaging after a plan change, confirm the workspace is on Scale and create a fresh API key.
@@ -73,9 +74,9 @@ python3 main.py --test       # Verify setup
 | #   | Mode                      | API?       | Description                                                                         |
 | --- | ------------------------- | ---------- | ----------------------------------------------------------------------------------- |
 | 1   | **Convert (Smart)**       | If key set | Auto-picks MarkItDown or Mistral OCR per file type. PDFs also get table extraction. |
-| 2   | **Convert (MarkItDown)**  | No         | Force local conversion. Fast, free, supports 30+ formats.                           |
+| 2   | **Convert (MarkItDown)**  | No         | Force local conversion across 29 configured extensions.                            |
 | 3   | **Convert (Mistral OCR)** | Yes        | Force cloud OCR. Best for scanned docs, complex layouts, equations.                 |
-| 4   | **PDF to Images**         | No         | Render each PDF page to PNG/JPEG at configurable DPI.                               |
+| 4   | **PDF to Images**         | No         | Render capped PDF pages to PNG/JPEG at configurable DPI.                            |
 | 5   | **Document QnA**          | Yes        | Ask questions about a document in natural language (advisory for exact values).     |
 | 6   | **Batch OCR**             | Yes        | Submit to Mistral Batch API at reduced cost (requires AI Studio Scale).              |
 | 7   | **System Status**         | No         | Cache stats, config info, optional feature readiness, diagnostics.                  |
@@ -103,7 +104,7 @@ python3 main.py --mode qna
 python3 main.py --mode batch_ocr
 python3 main.py --mode status
 python3 main.py --mode maintenance  # Clear cache and old uploads
-python3 main.py --no-interactive    # Process all files in input/ without prompts
+python3 main.py --mode smart --no-interactive  # Process all files in input/ without prompts
 ```
 
 ## Supported Formats
@@ -117,12 +118,17 @@ python3 main.py --no-interactive    # Process all files in input/ without prompt
 | Notebooks | IPYNB (Jupyter)                                 |
 | Audio     | MP3, WAV, M4A, FLAC (requires plugins + ffmpeg) |
 
+This table is the application's MarkItDown allowlist. Plugin-backed formats such as RTF, MSG, and audio require
+their handlers to be installed and enabled. ZIP and EPUB are intentionally rejected until bounded archive traversal
+is supported.
+
 ## Architecture
 
 ### Dual-Engine Design
 
 - **MarkItDown** -- fast, local, free. Handles standard document formats natively.
-- **Mistral OCR** -- AI-powered cloud OCR via the Files API with signed URLs. Understands complex layouts, tables, equations, multi-column text with ~95% accuracy.
+- **Mistral OCR** -- AI-powered cloud OCR via the Files API with signed URLs. Handles complex layouts, tables,
+  equations, and multi-column text.
 
 ### Processing Pipeline (Smart Mode)
 
@@ -134,7 +140,9 @@ python3 main.py --no-interactive    # Process all files in input/ without prompt
 ### Cost Optimization
 
 - **Caching**: SHA-256 file hashing with 24-hour persistence. Reprocessing the same files costs nothing.
-- **Batch OCR**: Significant cost reduction for 10+ documents via Mistral Batch API. Requires AI Studio Scale / paid access.
+- **Batch OCR**: Reduced-cost asynchronous processing via Mistral Batch API. The cost-effectiveness advisory defaults
+  to 10 documents and is configurable with `MISTRAL_BATCH_MIN_FILES`; submission accepts any nonempty selection.
+  Requires AI Studio Scale / paid access.
 - **Auto-cleanup**: Old uploaded files removed from Mistral after 7 days (configurable).
 
 ## Key Features
@@ -216,7 +224,10 @@ The interactive QnA mode (mode 5) uses streaming by default.
 
 ### Batch OCR
 
-Submit 10+ documents to the Mistral Batch API at reduced cost. After submission, the CLI emits a machine-readable `BATCH_JOB_ID=<id>` line for easy integration with automation scripts, in addition to the human-readable confirmation.
+Submit any nonempty document selection to the Mistral Batch API for reduced-cost asynchronous processing. The
+cost-effectiveness advisory defaults to 10 documents and is configurable with `MISTRAL_BATCH_MIN_FILES`. After
+submission, the CLI emits a machine-readable `BATCH_JOB_ID=<id>` line for automation, in addition to the
+human-readable confirmation.
 
 ```bash
 python3 main.py --mode batch_ocr --batch-action submit --no-interactive
@@ -251,7 +262,7 @@ MARKITDOWN_LLM_MODEL=pixtral-large-latest
 | File                        | Purpose                                                                |
 | --------------------------- | ---------------------------------------------------------------------- |
 | `requirements.txt`          | Core: MarkItDown, Mistral SDK, Pydantic, pdfplumber, pdf2image, Pillow |
-| `requirements-dev.txt`      | Dev: pytest, flake8, black, isort, pip-audit                           |
+| `requirements-dev.txt`      | Development: tests, linting, formatting, type checks, audits, builds  |
 | `requirements-optional.txt` | Optional: audio transcription, YouTube, OpenAI client, markitdown-ocr  |
 
 ### System Binaries
@@ -280,7 +291,7 @@ cache/           # OCR result cache (SHA-256 indexed)
 
 ## Configuration
 
-All settings are in `.env`. See `.env.example` for the complete reference with 90+ documented options.
+All settings are in `.env`. See `.env.example` for the complete reference.
 
 For the full configuration guide: **[CONFIGURATION.md](CONFIGURATION.md)**
 
@@ -297,8 +308,8 @@ For the full configuration guide: **[CONFIGURATION.md](CONFIGURATION.md)**
 
 ## Upstream Alignment
 
-- MarkItDown: `>=0.1.5` (https://github.com/microsoft/markitdown)
-- Mistral Python SDK: `==2.1.3` (https://github.com/mistralai/client-python)
+- MarkItDown: `markitdown[all]==0.1.6` (https://github.com/microsoft/markitdown)
+- Mistral Python SDK: `mistralai==2.7.1` (https://github.com/mistralai/client-python)
 - Mistral OCR docs: https://docs.mistral.ai/capabilities/document_ai/basic_ocr/
 - Mistral Batch API: https://docs.mistral.ai/capabilities/batch/
 

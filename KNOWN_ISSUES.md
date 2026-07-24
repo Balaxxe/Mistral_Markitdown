@@ -22,9 +22,9 @@ Mistral OCR works on all PDFs (scanned and text-based), but text-based PDFs some
 
 ---
 
-### Windows requires manual Poppler and Ghostscript paths
+### Windows may require a Poppler path
 
-On macOS/Linux these are auto-detected via PATH. On Windows you must configure them in `.env`:
+On macOS/Linux Poppler is normally discovered via `PATH`. On Windows, set `POPPLER_PATH` in `.env` if Poppler is not already on `PATH`:
 
 ```ini
 POPPLER_PATH="C:/Program Files/poppler-23.08.0/Library/bin"
@@ -48,6 +48,18 @@ For scanned or image-based content, consider using Mistral OCR mode.
 ```
 
 **Recommendation:** Use Convert (Smart) or Convert (Mistral OCR) for scanned documents and images. Smart mode auto-routes image inputs to Mistral OCR.
+
+---
+
+### ZIP and EPUB conversion is temporarily disabled
+
+Local ZIP and EPUB conversion is rejected until the archive parser can enforce shared decompressed-byte, member-count, and nesting-depth limits. Extract the archive yourself and convert the supported files it contains instead.
+
+---
+
+### PDF to Images can refuse an unreadable or oversized page count
+
+Before Poppler runs, PDF to Images uses `pdfplumber` to determine the page count. Conversion is refused if that count cannot be read, is empty, or exceeds `MAX_PAGES_PER_SESSION` and (when nonzero) `PDF_IMAGE_MAX_PAGES`. Repair or split the PDF, or raise the applicable limit deliberately.
 
 ---
 
@@ -108,6 +120,12 @@ Maintenance cleanup (`CLEANUP_OLD_UPLOADS`) only deletes Mistral Files API objec
 ### Mistral OCR size limits vs generic Files API
 
 The Mistral Files API allows large uploads, but the **OCR** product enforces stricter document limits (see Mistral docs, e.g. on the order of tens of MB per document). Very large PDFs may fail at OCR time even when upload succeeds.
+
+---
+
+### OCR output can be rejected by the local resource policy
+
+OCR responses are checked before images, cache entries, or Markdown are written. A response that exceeds local text, table, or image budgets—including after weak-page improvement—returns an error without publishing partial output. Split the document or reduce the requested scope before retrying.
 
 ---
 

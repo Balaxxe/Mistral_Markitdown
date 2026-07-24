@@ -27,7 +27,7 @@
 openai>=2.47.0
 
 # ----------------------------------------------------------------------------
-# Audio Transcription (Mode 5: Transcription)
+# Audio Transcription (MarkItDown plugin)
 # ----------------------------------------------------------------------------
 # Enables: Audio/video file transcription (MP3, WAV, M4A, FLAC)
 # Requires: MARKITDOWN_ENABLE_PLUGINS=true in .env
@@ -123,6 +123,6 @@ markitdown-ocr>=0.1.0
 # Excel (modern)            | openpyxl, pandas               | (via markitdown[all])
 # Excel (legacy)            | xlrd, pandas                   | (via markitdown[all])
 # Enhanced PDF              | pdfminer-six                   | (via MarkItDown)
-# NOTE: Azure Document Intelligence packages may appear above for experimentation
-# but are NOT wired into this application's conversion pipeline.
+# NOTE: Azure Document Intelligence packages are not included here and are not
+# wired into this application's conversion pipeline.
 # ============================================================================

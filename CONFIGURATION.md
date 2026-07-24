@@ -53,11 +53,12 @@ LOG_LEVEL=INFO
 
 ## API Keys
 
-### MISTRAL_API_KEY (Required for OCR)
+### MISTRAL_API_KEY (Required for Cloud Features)
 
 - **Type:** String
-- **Default:** None (must be set)
-- **Required for:** Convert (Smart) (`--mode smart`), Convert (Mistral OCR) (`--mode mistral_ocr`), Document QnA (`--mode qna`), Batch OCR (`--mode batch_ocr`); optional for MarkItDown LLM/plugin features when using Convert (MarkItDown) (`--mode markitdown`)
+- **Default:** `""` (not set)
+- **Required for:** Convert (Mistral OCR) (`--mode mistral_ocr`), Document QnA (`--mode qna`), and Batch OCR (`--mode batch_ocr`); optional for MarkItDown LLM/plugin features when using Convert (MarkItDown) (`--mode markitdown`)
+- **Smart mode:** When no key is set, Convert (Smart) (`--mode smart`) falls back to local MarkItDown for all files.
 - **Get it from:** https://console.mistral.ai/api-keys/
 - **Important:** A valid API key is enough for single-file OCR and Document QnA, but Batch OCR additionally requires Mistral AI Studio Scale / paid access.
 
@@ -73,6 +74,17 @@ MISTRAL_API_KEY="your_api_key_here"
 
 ```ini
 # MISTRAL_SERVER_URL="https://api.mistral.ai"
+```
+
+### ALLOW_INSECURE_MISTRAL_SERVER
+
+- **Type:** Boolean
+- **Default:** `false`
+- **Description:** Permit an `http://` value for `MISTRAL_SERVER_URL`. HTTPS is required by default.
+- **Security:** Setting this to `true` can expose the API key and document data in transit. Use it only on a trusted, private network where TLS termination is deliberately handled elsewhere.
+
+```ini
+ALLOW_INSECURE_MISTRAL_SERVER=false
 ```
 
 ---
@@ -104,12 +116,12 @@ MISTRAL_INCLUDE_IMAGES=true
 ### SAVE_MISTRAL_JSON
 
 - **Type:** Boolean
-- **Default:** `true`
+- **Default:** `false`
 - **Description:** Save detailed OCR metadata for quality assessment
 - **Output:** Creates `*_ocr_metadata.json` files
 
 ```ini
-SAVE_MISTRAL_JSON=true
+SAVE_MISTRAL_JSON=false
 ```
 
 ### OCR Quality Assessment Thresholds
@@ -164,6 +176,37 @@ ENABLE_OCR_QUALITY_ASSESSMENT=true
 
 ```ini
 ENABLE_OCR_WEAK_PAGE_IMPROVEMENT=true
+```
+
+#### OCR_QUALITY_PENALTY_WEAK_PAGES_MAX
+
+- **Type:** Integer
+- **Default:** `50`
+- **Description:** Maximum score deduction applied for weak OCR pages. This contributes to the total quality score; larger values make weak-page findings more influential.
+
+```ini
+OCR_QUALITY_PENALTY_WEAK_PAGES_MAX=50
+```
+
+#### OCR_QUALITY_PENALTY_HIGH_REPETITION
+
+- **Type:** Integer
+- **Default:** `30`
+- **Description:** Score deduction for high repeated-phrase density, which can indicate OCR artifacts. Tune carefully because increasing it can send more pages to reprocessing.
+
+```ini
+OCR_QUALITY_PENALTY_HIGH_REPETITION=30
+```
+
+#### OCR_MAX_WEAK_PAGE_WORKERS
+
+- **Type:** Integer
+- **Default:** `3`
+- **Minimum:** `1` (lower values fall back to the default)
+- **Description:** Maximum concurrent workers used for weak-page reprocessing. Keeping this bounded prevents nested OCR worker pools from oversubscribing CPU, memory, and API capacity.
+
+```ini
+OCR_MAX_WEAK_PAGE_WORKERS=3
 ```
 
 ### OCR Quality Detection Thresholds
@@ -298,6 +341,17 @@ MISTRAL_OCR_MAX_FILE_SIZE_MB=200
 MISTRAL_SIGNED_URL_EXPIRY=1
 ```
 
+### MISTRAL_SIGNED_URL_REFRESH_THRESHOLD
+
+- **Type:** Float
+- **Default:** `0.9`
+- **Minimum:** `0.1` (lower values fall back to the default)
+- **Description:** Fraction of a signed URL's lifetime after which the converter re-uploads to obtain a fresh URL. For example, `0.9` refreshes after 90% of the configured expiry. Earlier refreshes reduce expiry failures but can add upload time and API work.
+
+```ini
+MISTRAL_SIGNED_URL_REFRESH_THRESHOLD=0.9
+```
+
 ### MISTRAL_CLIENT_TIMEOUT_MS
 
 - **Type:** Integer (milliseconds)
@@ -358,7 +412,38 @@ MISTRAL_QNA_DOCUMENT_IMAGE_LIMIT=0
 MISTRAL_QNA_DOCUMENT_PAGE_LIMIT=0
 ```
 
-**Note:** Documents are limited to 50 MB for QnA. Larger files will be rejected with a clear error message.
+### MISTRAL_QNA_MAX_FILE_SIZE_MB
+
+- **Type:** Integer (MB)
+- **Default:** `50`
+- **Minimum:** `1` (lower values fall back to the default)
+- **Description:** Maximum local document size accepted for QnA before upload. Files above the cap are rejected before an API request, avoiding unnecessary upload time and charges.
+
+```ini
+MISTRAL_QNA_MAX_FILE_SIZE_MB=50
+```
+
+### MISTRAL_DOCUMENT_URL_STRICT_DNS
+
+- **Type:** Boolean
+- **Default:** `true`
+- **Description:** Require user-supplied QnA document URLs to pass local DNS validation and fail closed when lookup fails. This is a best-effort SSRF guard, not a complete defense against DNS rebinding because the remote service resolves the URL independently.
+- **Security:** Keep this enabled for untrusted URLs; prefer local-file upload or network egress controls for high-assurance deployments.
+
+```ini
+MISTRAL_DOCUMENT_URL_STRICT_DNS=true
+```
+
+### MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS
+
+- **Type:** Integer (seconds)
+- **Default:** `5`
+- **Minimum:** `1` (lower values fall back to the default)
+- **Description:** Timeout for the local DNS validation used by QnA URL mode. A shorter timeout fails closed more quickly; a longer timeout can accommodate slow resolvers but delays failures.
+
+```ini
+MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS=5
+```
 
 **CLI (non-interactive):** `--mode qna --no-interactive --qna-question "Your question?"` runs a single query without `input()` prompts.
 
@@ -511,6 +596,26 @@ MISTRAL_ENABLE_STRUCTURED_OUTPUT=true
 MISTRAL_DOCUMENT_SCHEMA_TYPE="auto"
 ```
 
+### MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION
+
+- **Type:** Boolean
+- **Default:** `false`
+- **Description:** When schema type is `auto`, allow a paid `chat.complete` request as a fallback document classifier after filename/text heuristics. Leaving it disabled avoids the additional API call and cost.
+
+```ini
+MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION=false
+```
+
+### SCHEMA_STRICT_UNKNOWN_TYPES
+
+- **Type:** Boolean
+- **Default:** `false`
+- **Description:** Raise an error when a caller requests an unknown schema or model type instead of falling back. Enable it in integrations that require predictable schema selection; leave it disabled for the more forgiving default behavior.
+
+```ini
+SCHEMA_STRICT_UNKNOWN_TYPES=false
+```
+
 ### MISTRAL_ENABLE_BBOX_ANNOTATION
 
 - **Type:** Boolean
@@ -588,7 +693,7 @@ MISTRAL_IMAGE_QUALITY_THRESHOLD=70
 
 - **Type:** String
 - **Default:** `"png"`
-- **Options:** `png`, `jpeg`, `tiff`, `ppm`
+- **Options:** `png`, `jpg` (alias), `jpeg`, `tiff`, `ppm`
 - **PNG:** Best quality, larger files
 - **JPEG:** Smaller files, slight quality loss
 
@@ -600,7 +705,7 @@ PDF_IMAGE_FORMAT="png"
 
 - **Type:** Integer
 - **Default:** `200`
-- **Range:** 72-600
+- **Minimum:** `72` (lower values fall back to the default)
 - **Recommendations:**
   - 150 - Screen viewing
   - 200 - General purpose
@@ -614,7 +719,7 @@ PDF_IMAGE_DPI=200
 
 - **Type:** Integer
 - **Default:** `4`
-- **Range:** 1-16
+- **Minimum:** `1` (lower values fall back to the default)
 - **Description:** Concurrent threads for PDF conversion
 
 ```ini
@@ -724,7 +829,7 @@ VERBOSE_PROGRESS=true
 
 - **Type:** Integer
 - **Default:** `5`
-- **Range:** 1-20
+- **Minimum:** `1` (lower values fall back to the default)
 - **Description:** Number of files to process concurrently when running multi-file conversion (e.g. `--mode smart`, `--mode mistral_ocr`, `--mode batch_ocr`)
 - **Recommendation:** 3-5 for most systems, 10-15 for powerful systems
 
@@ -750,6 +855,17 @@ MAX_BATCH_FILES=100
 
 ```ini
 MAX_PAGES_PER_SESSION=1000
+```
+
+### OCR_OFFICE_PAGE_ESTIMATE_DEFAULT
+
+- **Type:** Integer
+- **Default:** `32`
+- **Minimum:** `1` (lower values fall back to the default)
+- **Description:** Conservative page-budget reservation for Office and other non-PDF OCR inputs whose page count cannot be determined before upload. The estimate is charged against `MAX_PAGES_PER_SESSION`, so increasing it makes admission more conservative and can prevent unexpected work/cost from uncounted documents.
+
+```ini
+OCR_OFFICE_PAGE_ESTIMATE_DEFAULT=32
 ```
 
 ---
@@ -823,11 +939,11 @@ RETRY_CONNECTION_ERRORS=true
 ### GENERATE_TXT_OUTPUT
 
 - **Type:** Boolean
-- **Default:** `true`
+- **Default:** `false`
 - **Description:** Create `.txt` files alongside `.md` files
 
 ```ini
-GENERATE_TXT_OUTPUT=true
+GENERATE_TXT_OUTPUT=false
 ```
 
 ### INCLUDE_METADATA
@@ -1029,7 +1145,7 @@ PDF_IMAGE_THREAD_COUNT=4
 MAX_CONCURRENT_FILES=5
 
 # Output
-GENERATE_TXT_OUTPUT=true
+GENERATE_TXT_OUTPUT=false
 INCLUDE_METADATA=true
 TABLE_OUTPUT_FORMATS=markdown,csv
 
@@ -1081,7 +1197,7 @@ Optional features are detected at runtime and do not require configuration -- th
 ### For Text-Based PDFs (Fast & Free)
 
 ```ini
-MISTRAL_API_KEY=""  # Leave empty for Convert (MarkItDown) only
+MISTRAL_API_KEY=""  # Leave empty for local-only use; Smart falls back to MarkItDown
 LOG_LEVEL=INFO
 ```
 
@@ -1134,17 +1250,21 @@ VERBOSE_PROGRESS=true
 
 | Variable                           | Type   | Default              | Required                                                              | Section           |
 | ---------------------------------- | ------ | -------------------- | --------------------------------------------------------------------- | ----------------- |
-| MISTRAL_API_KEY                    | string | -                    | Yes (for smart, mistral_ocr, qna, batch_ocr; optional for markitdown) | API Keys          |
+| MISTRAL_API_KEY                    | string | ""                   | Yes (for mistral_ocr, qna, batch_ocr; optional for smart/markitdown) | API Keys          |
 | MISTRAL_SERVER_URL                 | string | ""                   | No                                                                    | API Keys          |
+| ALLOW_INSECURE_MISTRAL_SERVER      | bool   | false                | No                                                                    | API Keys          |
 | STRICT_INPUT_PATH_RESOLUTION       | bool   | false                | No                                                                    | Security          |
 | MISTRAL_OCR_MODEL                  | string | mistral-ocr-latest   | No                                                                    | OCR               |
 | MISTRAL_INCLUDE_IMAGES             | bool   | true                 | No                                                                    | OCR               |
-| SAVE_MISTRAL_JSON                  | bool   | true                 | No                                                                    | OCR               |
+| SAVE_MISTRAL_JSON                  | bool   | false                | No                                                                    | OCR               |
 | OCR_QUALITY_THRESHOLD_EXCELLENT    | int    | 80                   | No                                                                    | OCR Quality       |
 | OCR_QUALITY_THRESHOLD_GOOD         | int    | 60                   | No                                                                    | OCR Quality       |
 | OCR_QUALITY_THRESHOLD_ACCEPTABLE   | int    | 40                   | No                                                                    | OCR Quality       |
 | ENABLE_OCR_QUALITY_ASSESSMENT      | bool   | true                 | No                                                                    | OCR Quality       |
 | ENABLE_OCR_WEAK_PAGE_IMPROVEMENT   | bool   | true                 | No                                                                    | OCR Quality       |
+| OCR_QUALITY_PENALTY_WEAK_PAGES_MAX | int    | 50                   | No                                                                    | OCR Quality       |
+| OCR_QUALITY_PENALTY_HIGH_REPETITION | int   | 30                   | No                                                                    | OCR Quality       |
+| OCR_MAX_WEAK_PAGE_WORKERS          | int    | 3                    | No                                                                    | OCR Quality       |
 | OCR_MIN_TEXT_LENGTH                | int    | 50                   | No                                                                    | OCR Quality       |
 | OCR_MIN_UNIQUENESS_RATIO           | float  | 0.3                  | No                                                                    | OCR Quality       |
 | OCR_MAX_PHRASE_REPETITIONS         | int    | 5                    | No                                                                    | OCR Quality       |
@@ -1157,11 +1277,15 @@ VERBOSE_PROGRESS=true
 | MISTRAL_IMAGE_MIN_SIZE             | int    | 0                    | No                                                                    | OCR 3             |
 | MISTRAL_OCR_MAX_FILE_SIZE_MB       | int    | 200                  | No                                                                    | OCR               |
 | MISTRAL_SIGNED_URL_EXPIRY          | int    | 1                    | No                                                                    | OCR 3             |
+| MISTRAL_SIGNED_URL_REFRESH_THRESHOLD | float | 0.9                  | No                                                                    | OCR 3             |
 | MISTRAL_CLIENT_TIMEOUT_MS          | int    | 300000               | No                                                                    | Mistral API       |
 | MISTRAL_DOCUMENT_QNA_MODEL         | string | mistral-small-latest | No                                                                    | Document QnA      |
 | MISTRAL_QNA_SYSTEM_PROMPT          | string | ""                   | No                                                                    | Document QnA      |
 | MISTRAL_QNA_DOCUMENT_IMAGE_LIMIT   | int    | 0                    | No                                                                    | Document QnA      |
 | MISTRAL_QNA_DOCUMENT_PAGE_LIMIT    | int    | 0                    | No                                                                    | Document QnA      |
+| MISTRAL_QNA_MAX_FILE_SIZE_MB       | int    | 50                   | No                                                                    | Document QnA      |
+| MISTRAL_DOCUMENT_URL_STRICT_DNS    | bool   | true                 | No                                                                    | Document QnA      |
+| MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS | int | 5                  | No                                                                    | Document QnA      |
 | MISTRAL_BATCH_ENABLED              | bool   | true                 | No                                                                    | Batch OCR         |
 | MISTRAL_BATCH_MIN_FILES            | int    | 10                   | No                                                                    | Batch OCR         |
 | MISTRAL_BATCH_TIMEOUT_HOURS        | int    | 24                   | No                                                                    | Batch OCR         |
@@ -1171,7 +1295,6 @@ VERBOSE_PROGRESS=true
 | UPLOAD_RETENTION_DAYS              | int    | 7                    | No                                                                    | File Management   |
 | MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION | bool | false              | No                                                                    | Structured Data   |
 | OCR_OFFICE_PAGE_ESTIMATE_DEFAULT   | int    | 32                   | No                                                                    | Cost Guardrails   |
-| ALLOW_INSECURE_MISTRAL_SERVER      | bool   | false                | No                                                                    | Security          |
 | SCHEMA_STRICT_UNKNOWN_TYPES        | bool   | false                | No                                                                    | Structured Data   |
 | MISTRAL_ENABLE_STRUCTURED_OUTPUT   | bool   | true                 | No                                                                    | Structured Data   |
 | MISTRAL_DOCUMENT_SCHEMA_TYPE       | string | auto                 | No                                                                    | Structured Data   |
@@ -1203,7 +1326,7 @@ VERBOSE_PROGRESS=true
 | RETRY_EXPONENT                     | float  | 2.0                  | No                                                                    | Retry             |
 | RETRY_MAX_ELAPSED_TIME_MS          | int    | 60000                | No                                                                    | Retry             |
 | RETRY_CONNECTION_ERRORS            | bool   | true                 | No                                                                    | Retry             |
-| GENERATE_TXT_OUTPUT                | bool   | true                 | No                                                                    | Output            |
+| GENERATE_TXT_OUTPUT                | bool   | false                | No                                                                    | Output            |
 | INCLUDE_METADATA                   | bool   | true                 | No                                                                    | Output            |
 | TABLE_OUTPUT_FORMATS               | string | markdown             | No                                                                    | Output            |
 | ENABLE_BATCH_METADATA              | bool   | true                 | No                                                                    | Output            |
@@ -1221,9 +1344,9 @@ See README.md for complete feature documentation.
 
 ---
 
-**Last Updated:** 2026-03-25
+**Last Updated:** 2026-07-24
 
-**Version:** 3.0.0
+This reference tracks the current repository configuration defaults; use the installed package metadata for its release version.
 
 **Related Documentation:**
 
