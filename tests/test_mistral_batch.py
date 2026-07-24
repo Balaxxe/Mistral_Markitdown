@@ -169,6 +169,62 @@ class TestDownloadBatchResults:
         assert output.read_bytes() == b"existing"
         assert list(tmp_path.glob(f".{output.name}.*.tmp")) == []
 
+    def test_mkstemp_failure_closes_streaming_response(self, tmp_path, monkeypatch):
+        class StreamingResponse:
+            headers = {}
+
+            def __init__(self):
+                self.closed = False
+
+            def iter_bytes(self):
+                yield b"result"
+
+            def close(self):
+                self.closed = True
+
+        response = StreamingResponse()
+        mock_job = MagicMock(status="SUCCESS", output_file="output_file_id")
+        monkeypatch.setattr(batch_module.tempfile, "mkstemp", lambda **_: (_ for _ in ()).throw(OSError("disk full")))
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.batch.jobs.get.return_value = mock_job
+            mock_client.files.download.return_value = response
+            mock_get.return_value = mock_client
+            ok, path, error = mistral_converter.download_batch_results("job_mkstemp_failure", output_dir=tmp_path)
+
+        assert (ok, path) == (False, None)
+        assert "disk full" in (error or "")
+        assert response.closed is True
+
+    def test_output_directory_setup_failure_closes_streaming_response(self, tmp_path, monkeypatch):
+        class StreamingResponse:
+            headers = {}
+
+            def __init__(self):
+                self.closed = False
+
+            def iter_bytes(self):
+                yield b"result"
+
+            def close(self):
+                self.closed = True
+
+        response = StreamingResponse()
+        mock_job = MagicMock(status="SUCCESS", output_file="output_file_id")
+        monkeypatch.setattr(
+            batch_module.Path, "mkdir", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied"))
+        )
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.batch.jobs.get.return_value = mock_job
+            mock_client.files.download.return_value = response
+            mock_get.return_value = mock_client
+            ok, path, error = mistral_converter.download_batch_results("job_mkdir_failure", output_dir=tmp_path)
+
+        assert (ok, path) == (False, None)
+        assert "denied" in (error or "")
+        assert response.closed is True
+
     def test_job_not_complete(self):
         mock_job = MagicMock()
         mock_job.status = "RUNNING"

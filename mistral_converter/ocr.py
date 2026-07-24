@@ -422,6 +422,31 @@ def _append_ocr_page(result: Dict[str, Any], page_data: Dict[str, Any]) -> None:
         result["_full_text_bytes"] = current_bytes + page_bytes + separator_bytes
 
 
+def _validate_ocr_result_text_budget(ocr_result: Dict[str, Any]) -> None:
+    """Validate page and aggregate text after any OCR-result mutation."""
+    pages = ocr_result.get("pages", [])
+    if not isinstance(pages, list):
+        raise OCRResponseLimitError("OCR response pages must be a list")
+
+    aggregate_bytes = 0
+    has_text = False
+    for page in pages:
+        if not isinstance(page, dict):
+            raise OCRResponseLimitError("OCR response pages must be objects")
+        page_text = page.get("text", "")
+        page_bytes = _validate_ocr_text_size(page_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
+        if page_text and has_text:
+            aggregate_bytes += 2
+        aggregate_bytes += page_bytes
+        if aggregate_bytes > _MAX_OCR_TOTAL_TEXT_BYTES:
+            raise OCRResponseLimitError("OCR text exceeds the aggregate response byte limit")
+        has_text = has_text or bool(page_text)
+
+    full_text = ocr_result.get("full_text", "")
+    _validate_ocr_text_size(full_text, _MAX_OCR_TOTAL_TEXT_BYTES, "OCR response text")
+    ocr_result["_full_text_bytes"] = len(full_text.encode("utf-8"))
+
+
 def _parse_pages_response(response: Any, result: Dict[str, Any]) -> None:
     """Parse a multi-page OCR response (``response.pages``) into *result*."""
     for idx, page in enumerate(response.pages):
@@ -932,6 +957,12 @@ def _process_ocr_result_pipeline(
         quality_assessment = assess_ocr_quality(ocr_result)
         ocr_result["quality_assessment"] = quality_assessment
         logger.info("Quality after improvement: %.1f/100", quality_assessment["quality_score"])
+
+    try:
+        _validate_ocr_result_text_budget(ocr_result)
+    except OCRResponseLimitError as exc:
+        logger.warning("OCR result rejected by local text policy: %s", exc)
+        return False, None, str(exc)
 
     # Admit and save extracted images before persisting the response. A limit
     # failure must not leave partial images or an oversized cache entry.

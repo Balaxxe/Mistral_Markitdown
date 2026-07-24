@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import config
+import mistral_converter
 from mistral_converter import ocr
 
 
@@ -84,3 +86,60 @@ def test_parse_response_clears_partial_data_when_aggregate_text_limit_is_exceede
     assert result["pages"] == []
     assert result["full_text"] == ""
     assert "aggregate" in (result["parse_error"] or "")
+
+
+def _configure_post_improvement_pipeline(monkeypatch, tmp_path, improved_text):
+    monkeypatch.setattr(config, "ENABLE_OCR_QUALITY_ASSESSMENT", True)
+    monkeypatch.setattr(config, "ENABLE_OCR_WEAK_PAGE_IMPROVEMENT", True)
+    monkeypatch.setattr(
+        ocr,
+        "assess_ocr_quality",
+        MagicMock(
+            side_effect=[
+                {"weak_page_count": 1, "quality_score": 1.0},
+                {"weak_page_count": 0, "quality_score": 100.0},
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        ocr,
+        "improve_weak_pages",
+        MagicMock(return_value={"pages": [{"text": improved_text, "images": []}], "full_text": improved_text}),
+    )
+    cache_set = MagicMock()
+    create_markdown = MagicMock(return_value=tmp_path / "result.md")
+    save_images = MagicMock()
+    monkeypatch.setattr(mistral_converter, "save_extracted_images", save_images)
+    monkeypatch.setattr(ocr.utils.cache, "set", cache_set)
+    monkeypatch.setattr(ocr, "_create_markdown_output", create_markdown)
+    monkeypatch.setattr(ocr, "_save_structured_outputs", MagicMock())
+    return save_images, cache_set, create_markdown
+
+
+def test_post_improvement_over_limit_is_not_cached_or_published(tmp_path, monkeypatch):
+    monkeypatch.setattr(ocr, "_MAX_OCR_TOTAL_TEXT_BYTES", 10)
+    save_images, cache_set, create_markdown = _configure_post_improvement_pipeline(monkeypatch, tmp_path, "x" * 11)
+
+    ok, output_path, error = ocr._process_ocr_result_pipeline(
+        MagicMock(), tmp_path / "document.pdf", {"pages": [{"text": "weak", "images": []}], "full_text": "weak"}
+    )
+
+    assert (ok, output_path) == (False, None)
+    assert "aggregate" in (error or "")
+    save_images.assert_not_called()
+    cache_set.assert_not_called()
+    create_markdown.assert_not_called()
+
+
+def test_post_improvement_under_limit_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(ocr, "_MAX_OCR_TOTAL_TEXT_BYTES", 11)
+    save_images, cache_set, create_markdown = _configure_post_improvement_pipeline(monkeypatch, tmp_path, "x" * 11)
+
+    ok, output_path, error = ocr._process_ocr_result_pipeline(
+        MagicMock(), tmp_path / "document.pdf", {"pages": [{"text": "weak", "images": []}], "full_text": "weak"}
+    )
+
+    assert (ok, output_path, error) == (True, tmp_path / "result.md", None)
+    save_images.assert_called_once()
+    cache_set.assert_called_once()
+    create_markdown.assert_called_once()

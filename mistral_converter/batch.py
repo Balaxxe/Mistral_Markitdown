@@ -469,10 +469,11 @@ def download_batch_results(  # noqa: C901
             close_download()
             raise TypeError("Batch download requires a streaming response")
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=f".{output_path.name}.", suffix=".tmp", dir=output_dir)
-        total_bytes = 0
+        temp_name: Optional[str] = None
         try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(prefix=f".{output_path.name}.", suffix=".tmp", dir=output_dir)
+            total_bytes = 0
             with os.fdopen(fd, "wb") as temp_file:
                 for chunk in chunks:
                     if not isinstance(chunk, (bytes, bytearray, memoryview)):
@@ -483,10 +484,11 @@ def download_batch_results(  # noqa: C901
                     temp_file.write(chunk)
             os.replace(temp_name, output_path)
         except Exception:
-            try:
-                Path(temp_name).unlink(missing_ok=True)
-            except OSError:
-                pass
+            if temp_name is not None:
+                try:
+                    Path(temp_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise
         finally:
             close_download()
