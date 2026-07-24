@@ -657,6 +657,18 @@ class TestCreateBatchOcrFileFull:
         assert "page count" in (error or "").lower()
         client.assert_not_called()
 
+    def test_rejects_nonpositive_programmatic_page_limit_before_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 0)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+
+        with patch.object(mistral_converter, "get_mistral_client") as client:
+            ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+
+        assert (ok, path) == (False, None)
+        assert "positive" in (error or "").lower()
+        client.assert_not_called()
+
     def test_rejects_aggregate_bytes_before_upload(self, tmp_path, monkeypatch):
         monkeypatch.setattr(batch_module, "_MAX_BATCH_UPLOAD_TOTAL_BYTES", 5)
         first = tmp_path / "first.pdf"

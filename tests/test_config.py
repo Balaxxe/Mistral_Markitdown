@@ -200,6 +200,15 @@ class TestSafeParsingHelpers:
         result = config._safe_int("TEST_INT_VAR", 42)
         assert result == 42
 
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_session_page_limit_requires_a_positive_value(self, monkeypatch, restore_runtime_config, value):
+        monkeypatch.setenv("MAX_PAGES_PER_SESSION", value)
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.MAX_PAGES_PER_SESSION == 1000
+
     def test_safe_float_below_min(self, monkeypatch):
         monkeypatch.setenv("TEST_FLOAT_VAR", "-1.5")
         result = config._safe_float("TEST_FLOAT_VAR", 0.5, min_val=0.0)

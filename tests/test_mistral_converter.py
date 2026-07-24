@@ -345,11 +345,28 @@ class TestCommitSessionPages:
         assert mistral_converter._commit_session_pages(0, 1) is False
         assert mistral_converter._session_pages_warned is True
 
-    def test_limit_disabled_short_circuits(self, monkeypatch):
+    def test_nonpositive_limit_fails_closed(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 0)
         mistral_converter.reset_session_page_counter()
-        assert mistral_converter._commit_session_pages(0, 100) is True
+        assert mistral_converter._reserve_session_pages(1) is False
+        assert mistral_converter._commit_session_pages(0, 100) is False
         assert mistral_converter._session_pages_processed == 0
+
+    def test_ocr_rejects_nonpositive_programmatic_page_limit(self, monkeypatch, tmp_path):
+        import mistral_converter.ocr as ocr_module
+
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 0)
+        document = tmp_path / "document.pdf"
+        document.write_bytes(b"%PDF")
+        client = MagicMock()
+
+        with patch.object(ocr_module, "_estimate_session_pages_for_ocr") as estimate:
+            ok, result, error = mistral_converter.process_with_ocr(client, document)
+
+        assert (ok, result) == (False, None)
+        assert "positive" in (error or "").lower()
+        estimate.assert_not_called()
+        client.ocr.process.assert_not_called()
 
 
 class TestSessionPageReservations:

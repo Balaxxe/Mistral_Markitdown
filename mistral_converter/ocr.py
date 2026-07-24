@@ -128,6 +128,9 @@ def process_with_ocr(  # noqa: C901
         if progress_callback:
             progress_callback(message, progress)
 
+    if config.MAX_PAGES_PER_SESSION <= 0:
+        return False, None, "MAX_PAGES_PER_SESSION must be a positive integer"
+
     estimated_pages = _estimate_session_pages_for_ocr(file_path, pages)
     reserved_pages = 0
     try:
@@ -137,17 +140,16 @@ def process_with_ocr(  # noqa: C901
         if validation_error is not None:
             return validation_error
 
-        if config.MAX_PAGES_PER_SESSION > 0:
-            if not _reserve_session_pages(estimated_pages):
-                return (
-                    False,
-                    None,
-                    (
-                        f"Session page limit reached ({config.MAX_PAGES_PER_SESSION}). "
-                        "Start a new session or increase MAX_PAGES_PER_SESSION."
-                    ),
-                )
-            reserved_pages = estimated_pages
+        if not _reserve_session_pages(estimated_pages):
+            return (
+                False,
+                None,
+                (
+                    f"Session page limit reached ({config.MAX_PAGES_PER_SESSION}). "
+                    "Start a new session or increase MAX_PAGES_PER_SESSION."
+                ),
+            )
+        reserved_pages = estimated_pages
 
         _report_progress("Analyzing file...", 0.1)
 
@@ -206,15 +208,14 @@ def process_with_ocr(  # noqa: C901
                     reserved_pages,
                     file_path.name,
                 )
-            if config.MAX_PAGES_PER_SESSION > 0:
-                if not _commit_session_pages(reserved_pages, actual_pages):
-                    logger.warning(
-                        "Session page limit (%d) reached during processing of %s. "
-                        "Returning result but further OCR requests will be refused.",
-                        config.MAX_PAGES_PER_SESSION,
-                        file_path.name,
-                    )
-                reserved_pages = 0
+            if not _commit_session_pages(reserved_pages, actual_pages):
+                logger.warning(
+                    "Session page limit (%d) reached during processing of %s. "
+                    "Returning result but further OCR requests will be refused.",
+                    config.MAX_PAGES_PER_SESSION,
+                    file_path.name,
+                )
+            reserved_pages = 0
             _report_progress("OCR processing complete", 1.0)
             return True, result, None
         else:

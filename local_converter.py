@@ -868,10 +868,12 @@ def _neutralize_csv_formula(value: Any) -> Any:
 
 
 def _pdf_page_count(pdf_path: Path) -> int:
-    """Read the page count before dispatching a PDF to Poppler."""
-    from pypdf import PdfReader
+    """Read the page count with the required PDF parser before Poppler runs."""
+    if pdfplumber is None:
+        raise RuntimeError("pdfplumber is required to determine PDF page counts")
 
-    return len(PdfReader(str(pdf_path)).pages)
+    with pdfplumber.open(pdf_path) as pdf:
+        return len(pdf.pages)
 
 
 def _validate_pdf_render_input(pdf_path: Path) -> Optional[str]:
@@ -943,34 +945,6 @@ def convert_pdf_to_images(
             dpi = config.PDF_IMAGE_DPI
 
         resolved_thread_count = int(config.PDF_IMAGE_THREAD_COUNT if thread_count is None else thread_count)
-
-        max_pages = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
-        if max_pages > 0:
-            try:
-                analysis = analyze_file_content(pdf_path)
-                page_count = int(analysis.get("page_count") or 0)
-            except Exception as e:
-                logger.warning("Could not determine page count for %s: %s", pdf_path.name, e)
-                page_count = 0
-            if page_count <= 0:
-                return (
-                    False,
-                    [],
-                    (
-                        "Unable to determine PDF page count; refusing conversion "
-                        f"because PDF_IMAGE_MAX_PAGES is {max_pages}. Set the limit "
-                        "to 0 only if unbounded rendering is intentional."
-                    ),
-                )
-            if page_count > max_pages:
-                return (
-                    False,
-                    [],
-                    (
-                        f"PDF has {page_count} pages; exceeds PDF_IMAGE_MAX_PAGES "
-                        f"({max_pages}). Lower DPI, split the PDF, or raise the limit."
-                    ),
-                )
 
         logger.info(
             "Converting PDF to images: %s (DPI: %d, Format: %s)",

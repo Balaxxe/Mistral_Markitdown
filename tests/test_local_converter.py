@@ -688,15 +688,18 @@ class TestConvertPdfToImages:
         pdf_file = tmp_path / "unknown.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
         monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 5)
-        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
 
-        with patch.object(local_converter, "analyze_file_content", return_value={"page_count": 0}):
-            with patch.object(local_converter, "convert_from_path") as mock_convert:
-                success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+        def unavailable_page_count(_):
+            raise ValueError("page count unavailable")
+
+        monkeypatch.setattr(local_converter, "_pdf_page_count", unavailable_page_count)
+
+        with patch.object(local_converter, "convert_from_path") as mock_convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
 
         assert success is False
         assert paths == []
-        assert error is not None and "Unable to determine PDF page count" in error
+        assert error is not None and "Cannot determine PDF page count" in error
         mock_convert.assert_not_called()
 
     def test_known_page_count_renders_without_last_page_truncation(self, tmp_path, monkeypatch):
@@ -722,6 +725,26 @@ class TestConvertPdfToImages:
         assert error is None
         assert paths == [output_dir / "page_001.png"]
         assert "last_page" not in mock_convert.call_args.kwargs
+
+    def test_render_uses_preflight_page_count_without_reanalyzing(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "preflight_pages"
+        output_dir.mkdir()
+        pdf_file = tmp_path / "preflight.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4")
+        rendered = output_dir / "page-1.png"
+        rendered.touch()
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 5)
+        monkeypatch.setattr(config, "PDF_IMAGE_FORMAT", "png")
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+
+        with patch.object(local_converter, "analyze_file_content") as analyze:
+            with patch.object(local_converter, "convert_from_path", return_value=[str(rendered)]):
+                success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is True
+        assert error is None
+        assert paths == [output_dir / "page_001.png"]
+        analyze.assert_not_called()
 
     def test_handles_conversion_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
@@ -1546,6 +1569,28 @@ class TestLocalConversionSecurityLimits:
         assert success is False
         assert "too large" in error.lower()
         convert.assert_not_called()
+
+    def test_pdf_page_count_uses_core_pdfplumber(self, tmp_path):
+        pdf_file = tmp_path / "count.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        pdf = MagicMock()
+        pdf.pages = [MagicMock(), MagicMock()]
+        pdf.__enter__.return_value = pdf
+        pdf.__exit__.return_value = False
+
+        with patch.object(local_converter, "pdfplumber") as plumber:
+            plumber.open.return_value = pdf
+            assert local_converter._pdf_page_count(pdf_file) == 2
+
+        plumber.open.assert_called_once_with(pdf_file)
+
+    def test_pdf_page_count_fails_closed_without_pdfplumber(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "count.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(local_converter, "pdfplumber", None)
+
+        with pytest.raises(RuntimeError, match="pdfplumber"):
+            local_converter._pdf_page_count(pdf_file)
 
     def test_pdf_images_rejects_excess_pages_before_poppler(self, tmp_path, monkeypatch):
         pdf_file = tmp_path / "many-pages.pdf"

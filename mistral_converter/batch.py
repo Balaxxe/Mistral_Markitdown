@@ -82,6 +82,8 @@ def _prepare_batch_entries(
 
 def _validate_batch_file_admission(file_paths: List[Path]) -> Optional[str]:
     """Reject an unsafe batch before any Mistral upload is attempted."""
+    if config.MAX_PAGES_PER_SESSION <= 0:
+        return "MAX_PAGES_PER_SESSION must be a positive integer"
     if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
         return f"Batch contains {len(file_paths)} files; maximum allowed is {config.MAX_BATCH_FILES}"
 
@@ -105,7 +107,7 @@ def _validate_batch_file_admission(file_paths: List[Path]) -> Optional[str]:
         # Resolve through the package facade so callers and tests that patch the
         # public compatibility surface continue to control the estimator.
         estimated_pages += attr("_estimate_session_pages_for_ocr")(file_path, pages=None)
-        if config.MAX_PAGES_PER_SESSION > 0 and estimated_pages > config.MAX_PAGES_PER_SESSION:
+        if estimated_pages > config.MAX_PAGES_PER_SESSION:
             return (
                 f"Batch estimated page count ({estimated_pages}) exceeds session limit "
                 f"({config.MAX_PAGES_PER_SESSION})"

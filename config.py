@@ -531,8 +531,8 @@ PDF_IMAGE_THREAD_COUNT = _runtime_setting(
 PDF_IMAGE_USE_PDFTOCAIRO = _runtime_setting(
     "PDF_IMAGE_USE_PDFTOCAIRO", lambda: _safe_bool("PDF_IMAGE_USE_PDFTOCAIRO", True)
 )
-# Cap pages rendered by pdf2image (0 = unlimited). Prevents disk/CPU exhaustion
-# from dense PDFs that still fit under the MB size gates.
+# Additional PDF rendering cap. A value of 0 defers to the positive session
+# page cap, so rendering always retains a finite limit.
 PDF_IMAGE_MAX_PAGES = _runtime_setting("PDF_IMAGE_MAX_PAGES", lambda: _safe_int("PDF_IMAGE_MAX_PAGES", 100, min_val=0))
 
 # ============================================================================
@@ -572,7 +572,11 @@ MAX_CONCURRENT_FILES = _runtime_setting("MAX_CONCURRENT_FILES", lambda: _safe_in
 
 # API cost guardrails
 MAX_BATCH_FILES = _runtime_setting("MAX_BATCH_FILES", lambda: _safe_int("MAX_BATCH_FILES", 100))
-MAX_PAGES_PER_SESSION = _runtime_setting("MAX_PAGES_PER_SESSION", lambda: _safe_int("MAX_PAGES_PER_SESSION", 1000))
+# Shared, finite OCR/PDF work budget. Zero or negative values are invalid and
+# fall back to the secure default rather than disabling the cap.
+MAX_PAGES_PER_SESSION = _runtime_setting(
+    "MAX_PAGES_PER_SESSION", lambda: _safe_int("MAX_PAGES_PER_SESSION", 1000, min_val=1)
+)
 
 # Document QnA configuration
 MISTRAL_QNA_SYSTEM_PROMPT = _runtime_setting(

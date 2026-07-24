@@ -123,7 +123,7 @@ The following limits prevent runaway API spend and resource exhaustion:
 | `MISTRAL_OCR_MAX_FILE_SIZE_MB` | 200     | Hard reject before Mistral upload               |
 | `MISTRAL_QNA_MAX_FILE_SIZE_MB` | 50      | Hard reject before Document QnA upload          |
 | `MAX_BATCH_FILES`              | 100     | Hard reject in smart, MarkItDown, OCR, PDF→images, and batch modes |
-| `MAX_PAGES_PER_SESSION`        | 1000    | OCR/batch admission, PDF rendering, and shared table-work cap |
+| `MAX_PAGES_PER_SESSION`        | 1000    | Positive-only shared OCR/batch admission, PDF rendering, and table-work cap (`0`/negative values fall back to 1000) |
 | `PDF_IMAGE_MAX_PAGES`          | 100     | Additional PDF-rendering cap; combined with the session page limit (`0` defers to the session limit) |
 | `MAX_CONCURRENT_FILES`         | 5       | Thread pool cap for parallel processing         |
 | `MISTRAL_BATCH_TIMEOUT_HOURS`  | 24      | Batch job auto-cancellation                     |
