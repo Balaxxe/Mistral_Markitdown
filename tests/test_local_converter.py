@@ -656,6 +656,7 @@ class TestConvertPdfToImages:
         monkeypatch.setattr(config, "POPPLER_PATH", "")
         monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
         monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
 
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
@@ -688,13 +689,17 @@ class TestConvertPdfToImages:
         pdf_file.write_bytes(b"%PDF-1.4")
         monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 5)
 
-        with patch.object(local_converter, "analyze_file_content", return_value={"page_count": 0}):
-            with patch.object(local_converter, "convert_from_path") as mock_convert:
-                success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+        def unavailable_page_count(_):
+            raise ValueError("page count unavailable")
+
+        monkeypatch.setattr(local_converter, "_pdf_page_count", unavailable_page_count)
+
+        with patch.object(local_converter, "convert_from_path") as mock_convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
 
         assert success is False
         assert paths == []
-        assert error is not None and "Unable to determine PDF page count" in error
+        assert error is not None and "Cannot determine PDF page count" in error
         mock_convert.assert_not_called()
 
     def test_known_page_count_renders_without_last_page_truncation(self, tmp_path, monkeypatch):
@@ -710,6 +715,7 @@ class TestConvertPdfToImages:
         monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
         monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
         monkeypatch.setattr(config, "POPPLER_PATH", "")
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
 
         with patch.object(local_converter, "analyze_file_content", return_value={"page_count": 1}):
             with patch.object(local_converter, "convert_from_path", return_value=[str(rendered)]) as mock_convert:
@@ -720,6 +726,26 @@ class TestConvertPdfToImages:
         assert paths == [output_dir / "page_001.png"]
         assert "last_page" not in mock_convert.call_args.kwargs
 
+    def test_render_uses_preflight_page_count_without_reanalyzing(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "preflight_pages"
+        output_dir.mkdir()
+        pdf_file = tmp_path / "preflight.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4")
+        rendered = output_dir / "page-1.png"
+        rendered.touch()
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 5)
+        monkeypatch.setattr(config, "PDF_IMAGE_FORMAT", "png")
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+
+        with patch.object(local_converter, "analyze_file_content") as analyze:
+            with patch.object(local_converter, "convert_from_path", return_value=[str(rendered)]):
+                success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is True
+        assert error is None
+        assert paths == [output_dir / "page_001.png"]
+        analyze.assert_not_called()
+
     def test_handles_conversion_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "OUTPUT_IMAGES_DIR", tmp_path)
         monkeypatch.setattr(config, "PDF_IMAGE_DPI", 200)
@@ -727,6 +753,7 @@ class TestConvertPdfToImages:
         monkeypatch.setattr(config, "POPPLER_PATH", "")
         monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
         monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
 
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
@@ -757,9 +784,10 @@ class TestExtractAllTables:
         table1 = [["A", "B"], ["1", "2"]]
         table2 = [["C", "D"], ["3", "4"]]
 
-        with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[table1]):
-            with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[table2]):
-                result = local_converter.extract_all_tables(pdf_file)
+        with patch.object(local_converter, "_pdf_page_count", return_value=1):
+            with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[table1]):
+                with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[table2]):
+                    result = local_converter.extract_all_tables(pdf_file)
 
         assert result["table_count"] >= 1
         assert "pdfplumber" in result["methods_used"]
@@ -768,9 +796,10 @@ class TestExtractAllTables:
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
 
-        with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[]):
-            with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[]):
-                result = local_converter.extract_all_tables(pdf_file)
+        with patch.object(local_converter, "_pdf_page_count", return_value=1):
+            with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[]):
+                with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[]):
+                    result = local_converter.extract_all_tables(pdf_file)
 
         assert result["table_count"] == 0
         assert result["tables"] == []
@@ -1165,13 +1194,14 @@ class TestExtractAllTablesTextFallback:
         table1 = [["A", "B"], ["1", "2"]]
         text_table = [["X", "Y"], ["3", "4"]]
 
-        with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[table1]):
-            with patch.object(
-                local_converter,
-                "extract_tables_pdfplumber_text",
-                return_value=[text_table],
-            ):
-                result = local_converter.extract_all_tables(pdf_file)
+        with patch.object(local_converter, "_pdf_page_count", return_value=1):
+            with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[table1]):
+                with patch.object(
+                    local_converter,
+                    "extract_tables_pdfplumber_text",
+                    return_value=[text_table],
+                ):
+                    result = local_converter.extract_all_tables(pdf_file)
 
         assert "pdfplumber-text" in result["methods_used"]
 
@@ -1240,6 +1270,7 @@ class TestConvertPdfToImagesPng:
         monkeypatch.setattr(config, "POPPLER_PATH", "")
         monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
         monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
 
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
@@ -1269,6 +1300,7 @@ class TestConvertPdfToImagesPng:
         monkeypatch.setattr(config, "POPPLER_PATH", "")
         monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
         monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
 
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
@@ -1445,9 +1477,10 @@ class TestExtractAllTablesCoalescing:
         table1 = [["Name", "Value"], ["A", "1"]]
         table2 = [["Name", "Value"], ["B", "2"]]
 
-        with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[table1, table2]):
-            with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[]):
-                result = local_converter.extract_all_tables(pdf_file)
+        with patch.object(local_converter, "_pdf_page_count", return_value=1):
+            with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[table1, table2]):
+                with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[]):
+                    result = local_converter.extract_all_tables(pdf_file)
 
         # They should be coalesced into one table
         assert result["table_count"] == 1
@@ -1502,6 +1535,7 @@ class TestConvertPdfToImagesOtherFormat:
         monkeypatch.setattr(config, "POPPLER_PATH", "")
         monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
         monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
 
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
@@ -1521,6 +1555,234 @@ class TestConvertPdfToImagesOtherFormat:
         kwargs = mock_convert.call_args[1]
         assert kwargs["paths_only"] is True
         assert kwargs["fmt"] == "tiff"
+
+
+class TestLocalConversionSecurityLimits:
+    """Regression coverage for resource and CSV-injection boundaries."""
+
+    def test_pdf_images_rejects_oversized_file_before_poppler(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "large.pdf"
+        pdf_file.write_bytes(b"x" * 1024)
+        monkeypatch.setattr(config, "pdf_heavy_work_max_file_size_mb", lambda: 0.0001)
+        with patch.object(local_converter, "convert_from_path") as convert:
+            success, _, error = local_converter.convert_pdf_to_images(pdf_file)
+        assert success is False
+        assert "too large" in error.lower()
+        convert.assert_not_called()
+
+    def test_pdf_page_count_uses_core_pdfplumber(self, tmp_path):
+        pdf_file = tmp_path / "count.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        pdf = MagicMock()
+        pdf.pages = [MagicMock(), MagicMock()]
+        pdf.__enter__.return_value = pdf
+        pdf.__exit__.return_value = False
+
+        with patch.object(local_converter, "pdfplumber") as plumber:
+            plumber.open.return_value = pdf
+            assert local_converter._pdf_page_count(pdf_file) == 2
+
+        plumber.open.assert_called_once_with(pdf_file)
+
+    def test_pdf_page_count_fails_closed_without_pdfplumber(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "count.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(local_converter, "pdfplumber", None)
+
+        with pytest.raises(RuntimeError, match="pdfplumber"):
+            local_converter._pdf_page_count(pdf_file)
+
+    def test_pdf_images_rejects_excess_pages_before_poppler(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "many-pages.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 2)
+        with patch.object(local_converter, "convert_from_path") as convert:
+            success, _, error = local_converter.convert_pdf_to_images(pdf_file)
+        assert success is False
+        assert "too many pages" in error.lower()
+        convert.assert_not_called()
+
+    def test_stream_limit_wraps_nonseekable_input_as_seekable(self, monkeypatch):
+        class NonSeekable:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self, size=-1):
+                if size < 0:
+                    size = len(self._data)
+                result, self._data = self._data[:size], self._data[size:]
+                return result
+
+        result = MagicMock(markdown="# ok")
+        md = MagicMock()
+        md.convert_stream.return_value = result
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, _ = local_converter.convert_stream_with_markitdown(NonSeekable(b"hello"), "note.txt")
+        assert success is True
+        passed_stream = md.convert_stream.call_args.args[0]
+        assert passed_stream.closed
+
+    def test_stream_limit_rejects_oversized_seekable_input(self, monkeypatch):
+        monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 0.0001)
+        md = MagicMock()
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_stream_with_markitdown(io.BytesIO(b"x" * 1024), "note.txt")
+        assert success is False
+        assert "too large" in error.lower()
+        md.convert_stream.assert_not_called()
+
+    def test_stream_limit_does_not_trust_seekable_size_metadata(self, monkeypatch):
+        class DeceptiveSeekable:
+            def __init__(self):
+                self._remaining = b"x" * 1024
+
+            def tell(self):
+                return 0
+
+            def seek(self, *_args):
+                return 0
+
+            def read(self, size=-1):
+                if size < 0:
+                    size = len(self._remaining)
+                result, self._remaining = self._remaining[:size], self._remaining[size:]
+                return result
+
+        monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 0.0001)
+        md = MagicMock()
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_stream_with_markitdown(DeceptiveSeekable(), "note.txt")
+        assert success is False
+        assert "too large" in error.lower()
+        md.convert_stream.assert_not_called()
+
+    def test_archive_suffix_is_rejected_before_file_read(self, tmp_path):
+        archive_path = tmp_path / "missing.zip"
+        md = MagicMock()
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_with_markitdown(archive_path)
+        assert success is False
+        assert "disabled" in error.lower()
+        md.convert.assert_not_called()
+
+    def test_stream_archive_is_rejected_before_read(self):
+        class UnreadableArchive:
+            def read(self, *_args):
+                raise AssertionError("archive stream must not be read")
+
+        md = MagicMock()
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_stream_with_markitdown(UnreadableArchive(), "files.zip")
+        assert success is False
+        assert "disabled" in error.lower()
+        md.convert_stream.assert_not_called()
+
+    def test_epub_is_not_passed_to_unbounded_markitdown(self, tmp_path):
+        archive_path = tmp_path / "book.epub"
+        archive_path.write_bytes(b"not parsed")
+        md = MagicMock()
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_with_markitdown(archive_path)
+        assert success is False
+        assert "disabled" in error.lower()
+        md.convert.assert_not_called()
+
+    def test_table_strategies_reject_over_budget_before_page_parsing(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "many-pages.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1)
+        mock_pdf = MagicMock()
+        mock_pdf.pages = [MagicMock(), MagicMock()]
+        mock_pdf.__enter__.return_value = mock_pdf
+        mock_pdf.__exit__.return_value = False
+        with patch.object(local_converter, "pdfplumber") as plumber:
+            plumber.open.return_value = mock_pdf
+            local_converter.extract_tables_pdfplumber(pdf_file)
+            local_converter.extract_tables_pdfplumber_text(pdf_file)
+        mock_pdf.pages[0].extract_tables.assert_not_called()
+        mock_pdf.pages[1].extract_tables.assert_not_called()
+
+    def test_combined_table_strategies_use_the_same_document_cap(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 10)
+        with patch.object(local_converter, "_pdf_page_count", return_value=6):
+            with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[]) as lines:
+                with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[]) as text:
+                    local_converter.extract_all_tables(pdf_file)
+        lines.assert_called_once_with(pdf_file, max_pages=10, _work_pages=6)
+        text.assert_called_once_with(pdf_file, max_pages=10, _work_pages=4)
+        assert lines.call_args.kwargs["_work_pages"] + text.call_args.kwargs["_work_pages"] == 10
+
+    def test_combined_table_fallback_skips_when_shared_budget_is_exhausted(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 10)
+        with patch.object(local_converter, "_pdf_page_count", return_value=10):
+            with patch.object(local_converter, "extract_tables_pdfplumber", return_value=[]):
+                with patch.object(local_converter, "extract_tables_pdfplumber_text") as text:
+                    local_converter.extract_all_tables(pdf_file)
+        text.assert_not_called()
+
+    def test_table_strategy_honors_internal_work_slice_after_document_admission(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 10)
+        pages = [MagicMock() for _ in range(6)]
+        mock_pdf = MagicMock()
+        mock_pdf.pages = pages
+        mock_pdf.__enter__.return_value = mock_pdf
+        mock_pdf.__exit__.return_value = False
+        with patch.object(local_converter, "pdfplumber") as plumber:
+            plumber.open.return_value = mock_pdf
+            local_converter.extract_tables_pdfplumber(pdf_file, max_pages=10, _work_pages=4)
+        for page in pages[:4]:
+            page.extract_tables.assert_called_once_with()
+        for page in pages[4:]:
+            page.extract_tables.assert_not_called()
+
+    def test_table_strategies_fail_closed_for_nonpositive_page_limit(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 0)
+        page = MagicMock()
+        mock_pdf = MagicMock()
+        mock_pdf.pages = [page]
+        mock_pdf.__enter__.return_value = mock_pdf
+        mock_pdf.__exit__.return_value = False
+        with patch.object(local_converter, "pdfplumber") as plumber:
+            plumber.open.return_value = mock_pdf
+            assert local_converter.extract_tables_pdfplumber(pdf_file) == []
+            assert local_converter.extract_tables_pdfplumber_text(pdf_file) == []
+        page.extract_tables.assert_not_called()
+
+    def test_pdf_images_fail_closed_for_nonpositive_page_limit(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 0)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+        with patch.object(local_converter, "convert_from_path") as convert:
+            success, _, error = local_converter.convert_pdf_to_images(pdf_file)
+        assert success is False
+        assert "positive" in error.lower()
+        convert.assert_not_called()
+
+    def test_csv_formula_cells_are_neutralized_without_changing_benign_values(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
+        monkeypatch.setattr(config, "TABLE_OUTPUT_FORMATS", ["csv"])
+        pdf_file = tmp_path / "report.pdf"
+        tables = [[["=header", "Name"], [" +sum(A1)", "safe"], ["\t@cmd", "-1"], ["plain", "  text"]]]
+        local_converter.save_tables_to_files(pdf_file, tables)
+        content = next(tmp_path.glob("*.csv")).read_text()
+        assert "'=header" in content
+        assert "'+sum(A1)" in content
+        assert "'@cmd" in content
+        assert "'-1" in content
+        assert "plain,text" in content
+        assert local_converter._neutralize_csv_formula("  ordinary text") == "  ordinary text"
+        assert local_converter._neutralize_csv_formula("\t@cmd") == "'\t@cmd"
+        assert local_converter._neutralize_csv_formula("\r-formula") == "'\r-formula"
 
 
 if __name__ == "__main__":

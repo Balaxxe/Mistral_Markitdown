@@ -14,6 +14,7 @@ import csv
 import io
 import re
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -77,6 +78,44 @@ _markitdown_instance = _MARKITDOWN_UNSET
 _markitdown_instances = threading.local()
 _markitdown_generation = 0
 _markitdown_lock = threading.Lock()
+
+_UNBUDGETED_ARCHIVE_SUFFIXES = {".zip", ".epub"}
+
+
+def _max_markitdown_bytes() -> int:
+    return int(config.MARKITDOWN_MAX_FILE_SIZE_MB * 1024 * 1024)
+
+
+def _archive_rejection(file_name: str) -> Optional[str]:
+    """Reject compressed containers before an unbudgeted parser sees them."""
+    if Path(file_name).suffix.lower() in _UNBUDGETED_ARCHIVE_SUFFIXES:
+        return (
+            "ZIP/EPUB conversion is disabled until aggregate decompressed-byte, "
+            "member-count, and nesting-depth limits are enforced"
+        )
+    return None
+
+
+def _bounded_seekable_stream(stream: Any) -> Any:
+    """Return a seekable temporary stream no larger than the input budget."""
+    max_bytes = _max_markitdown_bytes()
+    # Spill large, valid streams to disk rather than keeping the full configured
+    # input limit resident in memory. The caller closes this private stream.
+    bounded = tempfile.SpooledTemporaryFile(max_size=min(max_bytes, 8 * 1024 * 1024), mode="w+b")
+    total = 0
+    while True:
+        chunk = stream.read(min(1024 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(
+                f"Stream too large (over {config.MARKITDOWN_MAX_FILE_SIZE_MB} MB). "
+                f"Maximum allowed: {config.MARKITDOWN_MAX_FILE_SIZE_MB} MB"
+            )
+        bounded.write(chunk)
+    bounded.seek(0)
+    return bounded
 
 
 def _build_markitdown_kwargs() -> Dict[str, Any]:
@@ -173,6 +212,10 @@ def convert_with_markitdown(
     Returns:
         Tuple of (success, markdown_content, error_message)
     """
+    archive_error = _archive_rejection(file_path.name)
+    if archive_error:
+        return False, None, archive_error
+
     # Enforce file size limit
     try:
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
@@ -264,7 +307,7 @@ def convert_stream_with_markitdown(
     Convert a binary stream to Markdown using MarkItDown's ``convert_stream()``.
 
     This avoids writing temporary files when data is already in memory
-    (e.g. from network streams, ZIP archives, or database BLOBs).
+    (e.g. from network streams or database BLOBs).
 
     Args:
         stream: A binary file-like object (``io.BytesIO``, open file in ``"rb"`` mode, etc.).
@@ -273,18 +316,27 @@ def convert_stream_with_markitdown(
     Returns:
         Tuple of (success, markdown_content, error_message)
     """
-    md = get_markitdown_instance()
-    if md is None:
-        return False, None, "MarkItDown not available"
-
-    if not hasattr(md, "convert_stream"):
-        return (
-            False,
-            None,
-            "convert_stream() not available; upgrade markitdown to >=0.1.5",
-        )
+    archive_error = _archive_rejection(filename)
+    if archive_error:
+        return False, None, archive_error
 
     try:
+        bounded_stream = _bounded_seekable_stream(stream)
+    except (OSError, TypeError, ValueError) as e:
+        return False, None, str(e)
+
+    try:
+        md = get_markitdown_instance()
+        if md is None:
+            return False, None, "MarkItDown not available"
+
+        if not hasattr(md, "convert_stream"):
+            return (
+                False,
+                None,
+                "convert_stream() not available; upgrade markitdown to >=0.1.5",
+            )
+
         logger.info("Converting stream with MarkItDown: %s", filename)
         stream_info = None
         if StreamInfo is not None:
@@ -293,9 +345,9 @@ def convert_stream_with_markitdown(
                 filename=filename,
             )
         if stream_info is not None:
-            result = md.convert_stream(stream, stream_info=stream_info)
+            result = md.convert_stream(bounded_stream, stream_info=stream_info)
         else:
-            result = md.convert_stream(stream, file_extension=Path(filename).suffix)
+            result = md.convert_stream(bounded_stream, file_extension=Path(filename).suffix)
 
         if result and hasattr(result, "markdown"):
             return True, result.markdown, None
@@ -314,6 +366,8 @@ def convert_stream_with_markitdown(
     except Exception as e:
         logger.error("Error converting stream with MarkItDown: %s", e)
         return False, None, str(e)
+    finally:
+        bounded_stream.close()
 
 
 # ============================================================================
@@ -321,7 +375,39 @@ def convert_stream_with_markitdown(
 # ============================================================================
 
 
-def extract_tables_pdfplumber(pdf_path: Path) -> List[List[List[str]]]:
+class _PDFTablePageLimitExceeded(ValueError):
+    """Raised before page parsing when a PDF exceeds the table-work budget."""
+
+
+def _bounded_table_pages(
+    pdf: Any,
+    max_pages: Optional[int] = None,
+    work_pages: Optional[int] = None,
+) -> Any:
+    """Return pages only after validating a positive, fail-closed page cap."""
+    page_limit = int(config.MAX_PAGES_PER_SESSION if max_pages is None else max_pages)
+    if page_limit <= 0:
+        raise _PDFTablePageLimitExceeded("PDF table page limit must be a positive integer")
+
+    pages = pdf.pages
+    page_count = len(pages)
+    if page_count <= 0:
+        raise _PDFTablePageLimitExceeded("PDF page count is empty or unavailable")
+    if page_count > page_limit:
+        raise _PDFTablePageLimitExceeded(f"PDF has {page_count} pages; table extraction limit is {page_limit}")
+    if work_pages is None:
+        work_limit = page_count
+    else:
+        work_limit = max(0, min(int(work_pages), page_count))
+    return enumerate(pages[:work_limit])
+
+
+def extract_tables_pdfplumber(
+    pdf_path: Path,
+    max_pages: Optional[int] = None,
+    *,
+    _work_pages: Optional[int] = None,
+) -> List[List[List[str]]]:
     """
     Extract tables from PDF using pdfplumber.
 
@@ -339,7 +425,7 @@ def extract_tables_pdfplumber(pdf_path: Path) -> List[List[List[str]]]:
 
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages):
+            for page_num, page in _bounded_table_pages(pdf, max_pages, _work_pages):
                 page_tables = page.extract_tables()
 
                 if page_tables:
@@ -352,13 +438,20 @@ def extract_tables_pdfplumber(pdf_path: Path) -> List[List[List[str]]]:
                                 len(table),
                             )
 
+    except _PDFTablePageLimitExceeded as e:
+        logger.warning("Skipping line-based table extraction for %s: %s", pdf_path.name, e)
     except Exception as e:
         logger.error("Error extracting tables with pdfplumber: %s", e)
 
     return tables
 
 
-def extract_tables_pdfplumber_text(pdf_path: Path) -> List[List[List[str]]]:
+def extract_tables_pdfplumber_text(
+    pdf_path: Path,
+    max_pages: Optional[int] = None,
+    *,
+    _work_pages: Optional[int] = None,
+) -> List[List[List[str]]]:
     """
     Extract tables from PDF using pdfplumber with text-based strategy.
 
@@ -383,7 +476,7 @@ def extract_tables_pdfplumber_text(pdf_path: Path) -> List[List[List[str]]]:
 
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages):
+            for page_num, page in _bounded_table_pages(pdf, max_pages, _work_pages):
                 page_tables = page.extract_tables(table_settings)
 
                 if page_tables:
@@ -396,6 +489,8 @@ def extract_tables_pdfplumber_text(pdf_path: Path) -> List[List[List[str]]]:
                                 len(table),
                             )
 
+    except _PDFTablePageLimitExceeded as e:
+        logger.warning("Skipping text-based table extraction for %s: %s", pdf_path.name, e)
     except Exception as e:
         logger.error("Error extracting tables with pdfplumber text strategy: %s", e)
 
@@ -566,8 +661,33 @@ def extract_all_tables(pdf_path: Path) -> Dict[str, Any]:
         "methods_used": [],
     }
 
-    # Try pdfplumber first with line-based detection (fastest, most reliable)
-    pdfplumber_tables = extract_tables_pdfplumber(pdf_path)
+    page_limit = int(config.MAX_PAGES_PER_SESSION)
+    if page_limit <= 0:
+        logger.warning("Skipping table extraction: PDF table page limit must be positive")
+        return result
+    try:
+        page_count = _pdf_page_count(pdf_path)
+    except Exception as e:
+        logger.warning("Skipping table extraction for %s: cannot determine page count: %s", pdf_path.name, e)
+        return result
+    if page_count <= 0 or page_count > page_limit:
+        logger.warning(
+            "Skipping table extraction for %s: page count %d is outside the allowed range 1-%d",
+            pdf_path.name,
+            page_count,
+            page_limit,
+        )
+        return result
+
+    # The strategies share one parser-invocation budget. Line extraction keeps
+    # full-document coverage; the text fallback receives only the remainder.
+    line_work_pages = page_count
+    remaining_work_pages = page_limit - line_work_pages
+    pdfplumber_tables = extract_tables_pdfplumber(
+        pdf_path,
+        max_pages=page_limit,
+        _work_pages=line_work_pages,
+    )
     if pdfplumber_tables:
         result["tables"].extend(pdfplumber_tables)
         result["methods_used"].append("pdfplumber")
@@ -575,11 +695,17 @@ def extract_all_tables(pdf_path: Path) -> Dict[str, Any]:
     # If line-based extraction found few tables, try text-based strategy.
     # Text strategy infers table structure from text positioning rather than
     # lines, which is better for tables without clear grid lines.
-    if len(result["tables"]) < 2:
-        text_tables = extract_tables_pdfplumber_text(pdf_path)
+    if len(result["tables"]) < 2 and remaining_work_pages > 0:
+        text_tables = extract_tables_pdfplumber_text(
+            pdf_path,
+            max_pages=page_limit,
+            _work_pages=min(page_count, remaining_work_pages),
+        )
         if text_tables:
             result["tables"].extend(text_tables)
             result["methods_used"].append("pdfplumber-text")
+    elif len(result["tables"]) < 2:
+        logger.debug("Skipping pdfplumber text strategy: shared table-work budget is exhausted")
     else:
         logger.debug(
             "Skipping pdfplumber text strategy: already found %d tables",
@@ -715,11 +841,11 @@ def save_tables_to_files(pdf_path: Path, tables: List[List[List[str]]]) -> List[
 
                 # Write header row
                 if headers:
-                    writer.writerow(headers)
+                    writer.writerow(_neutralize_csv_formula(cell) for cell in headers)
 
                 # Write data rows
                 if data_rows:
-                    writer.writerows(data_rows)
+                    writer.writerows([_neutralize_csv_formula(cell) for cell in row] for row in data_rows)
 
                 utils.atomic_write_text(csv_path, buf.getvalue(), newline="")
                 created_files.append(csv_path)
@@ -729,6 +855,51 @@ def save_tables_to_files(pdf_path: Path, tables: List[List[List[str]]]) -> List[
                 logger.error("Error saving CSV: %s", e)
 
     return created_files
+
+
+def _neutralize_csv_formula(value: Any) -> Any:
+    """Prevent spreadsheet applications from evaluating extracted cell text as a formula."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if stripped and stripped[0] in {"=", "+", "-", "@"}:
+        return "'" + value
+    return value
+
+
+def _pdf_page_count(pdf_path: Path) -> int:
+    """Read the page count with the required PDF parser before Poppler runs."""
+    if pdfplumber is None:
+        raise RuntimeError("pdfplumber is required to determine PDF page counts")
+
+    with pdfplumber.open(pdf_path) as pdf:
+        return len(pdf.pages)
+
+
+def _validate_pdf_render_input(pdf_path: Path) -> Optional[str]:
+    """Return a fail-closed resource-policy error before Poppler is invoked."""
+    try:
+        file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
+    except OSError as e:
+        return f"Cannot read PDF: {e}"
+    max_size_mb = config.pdf_heavy_work_max_file_size_mb()
+    if file_size_mb > max_size_mb:
+        return f"PDF too large ({file_size_mb:.1f} MB). Maximum allowed: {max_size_mb} MB"
+
+    try:
+        page_count = _pdf_page_count(pdf_path)
+    except Exception as e:
+        return f"Cannot determine PDF page count: {e}"
+    session_page_limit = int(config.MAX_PAGES_PER_SESSION)
+    render_page_limit = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
+    if session_page_limit <= 0:
+        return "PDF page limit must be a positive integer"
+    if page_count <= 0:
+        return "PDF page count is empty or unavailable"
+    page_limit = min(session_page_limit, render_page_limit) if render_page_limit > 0 else session_page_limit
+    if page_count > page_limit:
+        return f"PDF has too many pages ({page_count}). Maximum allowed: {page_limit}"
+    return None
 
 
 # ============================================================================
@@ -759,6 +930,10 @@ def convert_pdf_to_images(
         return False, [], "pdf2image not installed"
 
     try:
+        validation_error = _validate_pdf_render_input(pdf_path)
+        if validation_error:
+            return False, [], validation_error
+
         # Set output directory (unique stem when same basename in different dirs)
         if output_dir is None:
             output_dir = config.OUTPUT_IMAGES_DIR / f"{utils.safe_output_stem(pdf_path)}_pages"
@@ -770,34 +945,6 @@ def convert_pdf_to_images(
             dpi = config.PDF_IMAGE_DPI
 
         resolved_thread_count = int(config.PDF_IMAGE_THREAD_COUNT if thread_count is None else thread_count)
-
-        max_pages = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
-        if max_pages > 0:
-            try:
-                analysis = analyze_file_content(pdf_path)
-                page_count = int(analysis.get("page_count") or 0)
-            except Exception as e:
-                logger.warning("Could not determine page count for %s: %s", pdf_path.name, e)
-                page_count = 0
-            if page_count <= 0:
-                return (
-                    False,
-                    [],
-                    (
-                        "Unable to determine PDF page count; refusing conversion "
-                        f"because PDF_IMAGE_MAX_PAGES is {max_pages}. Set the limit "
-                        "to 0 only if unbounded rendering is intentional."
-                    ),
-                )
-            if page_count > max_pages:
-                return (
-                    False,
-                    [],
-                    (
-                        f"PDF has {page_count} pages; exceeds PDF_IMAGE_MAX_PAGES "
-                        f"({max_pages}). Lower DPI, split the PDF, or raise the limit."
-                    ),
-                )
 
         logger.info(
             "Converting PDF to images: %s (DPI: %d, Format: %s)",

@@ -114,9 +114,7 @@ python3 main.py --no-interactive    # Process all files in input/ without prompt
 | Web       | HTML, HTM, XML, RSS                             |
 | Data      | CSV, JSON, TXT                                  |
 | Images    | PNG, JPG, JPEG, GIF, BMP, TIFF, WEBP, AVIF      |
-| Books     | EPUB                                            |
 | Notebooks | IPYNB (Jupyter)                                 |
-| Archives  | ZIP (recursive extraction)                      |
 | Audio     | MP3, WAV, M4A, FLAC (requires plugins + ffmpeg) |
 
 ## Architecture

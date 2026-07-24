@@ -118,6 +118,7 @@ def setup_logging(log_file: Optional[str] = None) -> logging.Logger:
     """
     logger = logging.getLogger("document_converter")
     logger.setLevel(getattr(logging, config.LOG_LEVEL, logging.INFO))
+    logger.propagate = False
 
     # Clear existing handlers
     logger.handlers.clear()
@@ -125,7 +126,7 @@ def setup_logging(log_file: Optional[str] = None) -> logging.Logger:
     # Console handler with formatting
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(getattr(logging, config.LOG_LEVEL, logging.INFO))
-    console_format = logging.Formatter("%(levelname)s: %(message)s")
+    console_format = _TerminalSanitizingFormatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
 
@@ -133,15 +134,12 @@ def setup_logging(log_file: Optional[str] = None) -> logging.Logger:
     if log_file and config.SAVE_PROCESSING_LOGS:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
-        file_format = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        file_format = _TerminalSanitizingFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(file_format)
         logger.addHandler(file_handler)
 
     return logger
 
-
-# Default logger
-logger = setup_logging()
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\r?\n.*?\r?\n---\s*(?:\r?\n)?", re.DOTALL)
 
@@ -152,7 +150,7 @@ _ANSI_ESCAPE_RE = re.compile(
     r"|\[[0-?]*[ -/]*[@-~]"  # CSI sequences
     r"|\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences
     r"|[PX^_][^\x1b]*\x1b\\)"  # DCS/SOS/PM/APC sequences
-    r")|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"  # remaining C0 controls (keep \t \n \r)
+    r")|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]"  # remaining C0/C1 controls (keep \t \n \r)
 )
 
 
@@ -164,6 +162,19 @@ def sanitize_for_terminal(text: str) -> str:
     manipulation attacks.
     """
     return _ANSI_ESCAPE_RE.sub("", text)
+
+
+class _TerminalSanitizingFormatter(logging.Formatter):
+    """Render each operational log record as terminal-safe single-line text."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        safe_record = logging.makeLogRecord(record.__dict__.copy())
+        rendered = sanitize_for_terminal(super().format(safe_record))
+        return rendered.replace("\r", r"\r").replace("\n", r"\n")
+
+
+# Default logger (initialized after the console formatter and sanitizer exist).
+logger = setup_logging()
 
 
 def ui_print(*args, **kwargs) -> None:

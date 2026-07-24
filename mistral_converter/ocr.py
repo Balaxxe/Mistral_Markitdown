@@ -13,6 +13,7 @@ import config
 import utils
 
 from .facade import attr
+from .resource_limits import OCRResponseLimitError
 from .sdk_shims import Mistral
 from .session import (
     _commit_session_pages,
@@ -23,6 +24,22 @@ from .session import (
 )
 
 logger = utils.logger
+
+
+# Response-derived data is untrusted. These private ceilings bound local work
+# without expanding the public configuration surface.
+_MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES = 10 * 1024 * 1024
+_MAX_OCR_TOTAL_TEXT_BYTES = 50 * 1024 * 1024
+_MAX_OCR_TABLES_PER_PAGE = 256
+_MAX_OCR_TABLE_REPLACEMENTS_PER_PAGE = 4096
+_MAX_OCR_TABLE_ID_CHARS = 128
+_MAX_OCR_TABLE_CONTENT_BYTES = 8 * 1024 * 1024
+_MAX_OCR_TABLE_CONTENT_TOTAL_BYTES = 10 * 1024 * 1024
+_TABLE_PLACEHOLDER_RE = re.compile(r"\[([^\]\r\n()]{1,128})\]\(\1\)")
+_TABLE_ID_RE = re.compile(r"^[^\]\r\n()]{1,128}$")
+
+# Compatibility alias for focused internal tests and future shared consumers.
+_OCRResponseLimitError = OCRResponseLimitError
 
 
 def _validate_file_for_ocr(
@@ -111,6 +128,9 @@ def process_with_ocr(  # noqa: C901
         if progress_callback:
             progress_callback(message, progress)
 
+    if config.MAX_PAGES_PER_SESSION <= 0:
+        return False, None, "MAX_PAGES_PER_SESSION must be a positive integer"
+
     estimated_pages = _estimate_session_pages_for_ocr(file_path, pages)
     reserved_pages = 0
     try:
@@ -120,17 +140,16 @@ def process_with_ocr(  # noqa: C901
         if validation_error is not None:
             return validation_error
 
-        if config.MAX_PAGES_PER_SESSION > 0:
-            if not _reserve_session_pages(estimated_pages):
-                return (
-                    False,
-                    None,
-                    (
-                        f"Session page limit reached ({config.MAX_PAGES_PER_SESSION}). "
-                        "Start a new session or increase MAX_PAGES_PER_SESSION."
-                    ),
-                )
-            reserved_pages = estimated_pages
+        if not _reserve_session_pages(estimated_pages):
+            return (
+                False,
+                None,
+                (
+                    f"Session page limit reached ({config.MAX_PAGES_PER_SESSION}). "
+                    "Start a new session or increase MAX_PAGES_PER_SESSION."
+                ),
+            )
+        reserved_pages = estimated_pages
 
         _report_progress("Analyzing file...", 0.1)
 
@@ -189,15 +208,14 @@ def process_with_ocr(  # noqa: C901
                     reserved_pages,
                     file_path.name,
                 )
-            if config.MAX_PAGES_PER_SESSION > 0:
-                if not _commit_session_pages(reserved_pages, actual_pages):
-                    logger.warning(
-                        "Session page limit (%d) reached during processing of %s. "
-                        "Returning result but further OCR requests will be refused.",
-                        config.MAX_PAGES_PER_SESSION,
-                        file_path.name,
-                    )
-                reserved_pages = 0
+            if not _commit_session_pages(reserved_pages, actual_pages):
+                logger.warning(
+                    "Session page limit (%d) reached during processing of %s. "
+                    "Returning result but further OCR requests will be refused.",
+                    config.MAX_PAGES_PER_SESSION,
+                    file_path.name,
+                )
+            reserved_pages = 0
             _report_progress("OCR processing complete", 1.0)
             return True, result, None
         else:
@@ -243,6 +261,7 @@ def _extract_page_text(page: Any) -> str:
 def _parse_page_object(page: Any, idx: int) -> Dict[str, Any]:
     """Parse a single OCR page object into a standardised dict."""
     raw_text = _extract_page_text(page)
+    _validate_ocr_text_size(raw_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
     page_text = utils.clean_consecutive_duplicates(raw_text)
     # Decode HTML entities (e.g. &amp; -> &) that the OCR API may return
     page_text = html.unescape(page_text)
@@ -302,15 +321,11 @@ def _parse_page_object(page: Any, idx: int) -> Dict[str, Any]:
 
     # Tables
     if hasattr(page, "tables") and page.tables:
-        page_data["tables"] = [t.model_dump() if hasattr(t, "model_dump") else t for t in page.tables]
-        # Expand table placeholder links in page text with actual table content.
-        # The API returns placeholders like [tbl-0.md](tbl-0.md) and stores the
-        # real table data in the tables array.
-        for tbl in page_data["tables"]:
-            tbl_id = tbl.get("id", "") if isinstance(tbl, dict) else ""
-            tbl_content = tbl.get("content", "") if isinstance(tbl, dict) else ""
-            if tbl_id and tbl_content:
-                page_data["text"] = page_data["text"].replace(f"[{tbl_id}]({tbl_id})", tbl_content)
+        for table in page.tables:
+            if len(page_data["tables"]) >= _MAX_OCR_TABLES_PER_PAGE:
+                raise OCRResponseLimitError(f"OCR table count exceeds the per-page limit ({_MAX_OCR_TABLES_PER_PAGE})")
+            page_data["tables"].append(table.model_dump() if hasattr(table, "model_dump") else table)
+    page_data["text"] = _expand_table_placeholders(page_data["text"], page_data["tables"])
 
     # Hyperlinks
     if hasattr(page, "hyperlinks") and page.hyperlinks:
@@ -325,19 +340,128 @@ def _parse_page_object(page: Any, idx: int) -> Dict[str, Any]:
     return page_data
 
 
+def _validate_ocr_text_size(text: Any, max_bytes: int, context: str) -> int:
+    if not isinstance(text, str):
+        raise OCRResponseLimitError(f"{context} must be text")
+    encoded_bytes = len(text.encode("utf-8"))
+    if encoded_bytes > max_bytes:
+        raise OCRResponseLimitError(f"{context} exceeds the local byte limit ({max_bytes})")
+    return encoded_bytes
+
+
+def _expand_table_placeholders(text: str, tables: List[Any]) -> str:  # noqa: C901
+    """Expand original table links once and fail before allocating oversized output."""
+    _validate_ocr_text_size(text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
+    if not tables:
+        return text
+    if len(tables) > _MAX_OCR_TABLES_PER_PAGE:
+        raise OCRResponseLimitError(f"OCR table count exceeds the per-page limit ({_MAX_OCR_TABLES_PER_PAGE})")
+
+    contents: Dict[str, str] = {}
+    total_content_bytes = 0
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        table_id = table.get("id")
+        content = table.get("content")
+        if table_id is None or content is None:
+            continue
+        if not isinstance(table_id, str) or not isinstance(content, str):
+            raise OCRResponseLimitError("OCR table identifiers and content must be text")
+        if len(table_id) > _MAX_OCR_TABLE_ID_CHARS or _TABLE_ID_RE.fullmatch(table_id) is None:
+            raise OCRResponseLimitError("OCR table identifier is malformed")
+        if table_id in contents:
+            raise OCRResponseLimitError(f"Duplicate OCR table identifier: {table_id}")
+        content_bytes = _validate_ocr_text_size(content, _MAX_OCR_TABLE_CONTENT_BYTES, "OCR table content")
+        total_content_bytes += content_bytes
+        if total_content_bytes > _MAX_OCR_TABLE_CONTENT_TOTAL_BYTES:
+            raise OCRResponseLimitError("OCR table content exceeds the aggregate per-page byte limit")
+        contents[table_id] = content
+
+    if not contents:
+        return text
+
+    pieces: List[str] = []
+    cursor = 0
+    output_bytes = 0
+    replacements = 0
+    for match in _TABLE_PLACEHOLDER_RE.finditer(text):
+        replacement = contents.get(match.group(1))
+        if replacement is None:
+            continue
+        replacements += 1
+        if replacements > _MAX_OCR_TABLE_REPLACEMENTS_PER_PAGE:
+            raise OCRResponseLimitError(
+                f"OCR table replacements exceed the per-page limit ({_MAX_OCR_TABLE_REPLACEMENTS_PER_PAGE})"
+            )
+        literal = text[cursor : match.start()]
+        output_bytes += len(literal.encode("utf-8")) + len(replacement.encode("utf-8"))
+        if output_bytes > _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES:
+            raise OCRResponseLimitError("OCR table expansion exceeds the per-page output byte limit")
+        pieces.extend((literal, replacement))
+        cursor = match.end()
+
+    tail = text[cursor:]
+    output_bytes += len(tail.encode("utf-8"))
+    if output_bytes > _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES:
+        raise OCRResponseLimitError("OCR table expansion exceeds the per-page output byte limit")
+    pieces.append(tail)
+    return "".join(pieces)
+
+
+def _append_ocr_page(result: Dict[str, Any], page_data: Dict[str, Any]) -> None:
+    """Append one admitted page while enforcing the aggregate OCR text budget."""
+    page_text = page_data.get("text", "")
+    page_bytes = _validate_ocr_text_size(page_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
+    separator_bytes = 2 if page_text else 0
+    current_bytes = int(result.get("_full_text_bytes", 0))
+    if current_bytes + page_bytes + separator_bytes > _MAX_OCR_TOTAL_TEXT_BYTES:
+        raise OCRResponseLimitError("OCR text exceeds the aggregate response byte limit")
+    result["pages"].append(page_data)
+    if page_text:
+        result["full_text"] += page_text + "\n\n"
+        result["_full_text_bytes"] = current_bytes + page_bytes + separator_bytes
+
+
+def _validate_ocr_result_text_budget(ocr_result: Dict[str, Any]) -> None:
+    """Validate page and aggregate text after any OCR-result mutation."""
+    pages = ocr_result.get("pages", [])
+    if not isinstance(pages, list):
+        raise OCRResponseLimitError("OCR response pages must be a list")
+
+    aggregate_bytes = 0
+    has_text = False
+    for page in pages:
+        if not isinstance(page, dict):
+            raise OCRResponseLimitError("OCR response pages must be objects")
+        page_text = page.get("text", "")
+        page_bytes = _validate_ocr_text_size(page_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
+        if page_text and has_text:
+            aggregate_bytes += 2
+        aggregate_bytes += page_bytes
+        if aggregate_bytes > _MAX_OCR_TOTAL_TEXT_BYTES:
+            raise OCRResponseLimitError("OCR text exceeds the aggregate response byte limit")
+        has_text = has_text or bool(page_text)
+
+    full_text = ocr_result.get("full_text", "")
+    _validate_ocr_text_size(full_text, _MAX_OCR_TOTAL_TEXT_BYTES, "OCR response text")
+    ocr_result["_full_text_bytes"] = len(full_text.encode("utf-8"))
+
+
 def _parse_pages_response(response: Any, result: Dict[str, Any]) -> None:
     """Parse a multi-page OCR response (``response.pages``) into *result*."""
     for idx, page in enumerate(response.pages):
         page_data = _parse_page_object(page, idx)
-        result["pages"].append(page_data)
-        if page_data["text"]:
-            result["full_text"] += page_data["text"] + "\n\n"
+        _append_ocr_page(result, page_data)
 
 
 def _parse_single_text_response(text: str, result: Dict[str, Any]) -> None:
     """Handle responses that carry a single text field (markdown / text / content)."""
+    _validate_ocr_text_size(text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR response text")
     cleaned = html.unescape(utils.clean_consecutive_duplicates(text))
+    cleaned_bytes = _validate_ocr_text_size(cleaned, _MAX_OCR_TOTAL_TEXT_BYTES, "OCR response text")
     result["full_text"] = cleaned
+    result["_full_text_bytes"] = cleaned_bytes
     result["pages"].append({"page_number": 1, "api_page_index": 0, "text": cleaned, "images": []})
 
 
@@ -346,14 +470,10 @@ def _parse_dict_response(response: dict, result: Dict[str, Any]) -> None:
     if "pages" in response:
         for idx, page in enumerate(response["pages"]):
             page_text = page.get("markdown", page.get("text", page.get("content", "")))
+            _validate_ocr_text_size(page_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
             page_text = html.unescape(utils.clean_consecutive_duplicates(page_text))
-            # Expand table placeholder links with actual content
             tables = page.get("tables", [])
-            for tbl in tables:
-                tbl_id = tbl.get("id", "") if isinstance(tbl, dict) else ""
-                tbl_content = tbl.get("content", "") if isinstance(tbl, dict) else ""
-                if tbl_id and tbl_content:
-                    page_text = page_text.replace(f"[{tbl_id}]({tbl_id})", tbl_content)
+            page_text = _expand_table_placeholders(page_text, tables)
             raw_index = page.get("index")
             if raw_index is not None:
                 try:
@@ -363,17 +483,16 @@ def _parse_dict_response(response: dict, result: Dict[str, Any]) -> None:
             else:
                 api_page_index = idx
             page_num = api_page_index + 1
-            result["pages"].append(
+            _append_ocr_page(
+                result,
                 {
                     "page_number": page_num,
                     "api_page_index": api_page_index,
                     "text": page_text,
                     "images": page.get("images", []),
                     "tables": tables,
-                }
+                },
             )
-            if page_text:
-                result["full_text"] += page_text + "\n\n"
     else:
         text = response.get("markdown", response.get("text", ""))
         if text:
@@ -471,6 +590,11 @@ def _parse_ocr_response(response: Any, file_path: Path) -> Dict[str, Any]:
             len(result["full_text"]),
         )
 
+    except OCRResponseLimitError as e:
+        logger.warning("OCR response rejected by local resource policy: %s", e)
+        result["pages"] = []
+        result["full_text"] = ""
+        result["parse_error"] = str(e)
     except Exception as e:
         # Preserve full traceback so unexpected parser failures can be diagnosed from logs.
         logger.exception("Error parsing OCR response: %s", e)
@@ -835,7 +959,24 @@ def _process_ocr_result_pipeline(
         ocr_result["quality_assessment"] = quality_assessment
         logger.info("Quality after improvement: %.1f/100", quality_assessment["quality_score"])
 
-    # Cache result (only for fresh results)
+    try:
+        _validate_ocr_result_text_budget(ocr_result)
+    except OCRResponseLimitError as exc:
+        logger.warning("OCR result rejected by local text policy: %s", exc)
+        return False, None, str(exc)
+
+    # Admit and save extracted images before persisting the response. A limit
+    # failure must not leave partial images or an oversized cache entry.
+    if not from_cache:
+        try:
+            attr("save_extracted_images")(ocr_result, file_path, fail_on_limit=True)
+        except OCRResponseLimitError as exc:
+            logger.warning("OCR result rejected by local image policy: %s", exc)
+            return False, None, str(exc)
+    else:
+        logger.debug("Skipping image extraction for cached result")
+
+    # Cache result (only for fresh, locally admitted responses).
     if use_cache and not from_cache:
         utils.cache.set(
             file_path,
@@ -845,12 +986,6 @@ def _process_ocr_result_pipeline(
                 improve_weak=improve_weak,
             ),
         )
-
-    # Save extracted images (skip for cached results to avoid redundant IO)
-    if not from_cache:
-        attr("save_extracted_images")(ocr_result, file_path)
-    else:
-        logger.debug("Skipping image extraction for cached result")
 
     # Generate markdown output
     output_path = _create_markdown_output(file_path, ocr_result)

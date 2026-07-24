@@ -14,6 +14,14 @@ _session_pages_warned = False
 _session_pages_lock = threading.Lock()
 
 
+def _session_page_limit() -> int:
+    """Return the configured page cap, or 0 when a direct override is unsafe."""
+    try:
+        return int(config.MAX_PAGES_PER_SESSION)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _estimate_session_pages_for_ocr(file_path: Path, pages: Optional[List[int]]) -> int:
     """Upper-bound page estimate for session budgeting (concurrent-safe reserve).
 
@@ -41,14 +49,17 @@ def _estimate_session_pages_for_ocr(file_path: Path, pages: Optional[List[int]])
         # Unknown PDFs reserve the entire remaining budget so only one can be
         # in flight at a time without blocking later sequential work after a
         # smaller-than-reserved response commits its actual page count.
-        if config.MAX_PAGES_PER_SESSION > 0:
+        page_limit = _session_page_limit()
+        if page_limit > 0:
             with _session_pages_lock:
-                remaining = config.MAX_PAGES_PER_SESSION - _session_pages_processed - _session_pages_inflight
+                remaining = page_limit - _session_pages_processed - _session_pages_inflight
             return max(1, remaining)
-        return 256
+        return 1
 
     # Office / other non-image non-PDF: conservative estimate from config.
-    cap = config.MAX_PAGES_PER_SESSION if config.MAX_PAGES_PER_SESSION > 0 else 256
+    cap = _session_page_limit()
+    if cap <= 0:
+        return 1
     return max(1, min(cap, config.OCR_OFFICE_PAGE_ESTIMATE_DEFAULT))
 
 
@@ -57,9 +68,10 @@ def _reserve_session_pages(estimated: int) -> bool:
     global _session_pages_inflight
     est = max(1, estimated)
     with _session_pages_lock:
-        if config.MAX_PAGES_PER_SESSION <= 0:
-            return True
-        if _session_pages_processed + _session_pages_inflight + est > config.MAX_PAGES_PER_SESSION:
+        page_limit = _session_page_limit()
+        if page_limit <= 0:
+            return False
+        if _session_pages_processed + _session_pages_inflight + est > page_limit:
             return False
         _session_pages_inflight += est
         return True
@@ -70,26 +82,27 @@ def _commit_session_pages(reserved: int, actual: int) -> bool:
     global _session_pages_processed, _session_pages_inflight, _session_pages_warned
     with _session_pages_lock:
         _session_pages_inflight = max(0, _session_pages_inflight - max(0, reserved))
-        if config.MAX_PAGES_PER_SESSION <= 0:
-            return True
+        page_limit = _session_page_limit()
+        if page_limit <= 0:
+            return False
         new_total = _session_pages_processed + actual
         _session_pages_processed = new_total
-        if new_total >= config.MAX_PAGES_PER_SESSION:
+        if new_total >= page_limit:
             if not _session_pages_warned:
                 _session_pages_warned = True
-                if new_total > config.MAX_PAGES_PER_SESSION:
+                if new_total > page_limit:
                     logger.warning(
                         "Session page budget exceeded (%d > %d pages). This can happen when "
                         "parallel OCR jobs underestimated page counts or the API returned "
                         "more pages than reserved. Further OCR requests will be refused.",
                         new_total,
-                        config.MAX_PAGES_PER_SESSION,
+                        page_limit,
                     )
                 else:
                     logger.warning(
                         "Session page limit reached (%d/%d). Further OCR requests will be refused.",
                         new_total,
-                        config.MAX_PAGES_PER_SESSION,
+                        page_limit,
                     )
             return False
         return True
@@ -107,7 +120,8 @@ def _release_session_pages_reservation(reserved: int) -> None:
 def _is_page_limit_reached() -> bool:
     """Return ``True`` if the session page limit has already been reached."""
     with _session_pages_lock:
-        return config.MAX_PAGES_PER_SESSION > 0 and _session_pages_processed >= config.MAX_PAGES_PER_SESSION
+        page_limit = _session_page_limit()
+        return page_limit <= 0 or _session_pages_processed >= page_limit
 
 
 def _ocr_session_page_delta(result: Dict[str, Any]) -> int:

@@ -106,6 +106,8 @@ class TestFileTypeConfiguration:
         assert "png" in config.MARKITDOWN_SUPPORTED
         assert "webp" in config.MARKITDOWN_SUPPORTED
         assert "avif" in config.MARKITDOWN_SUPPORTED
+        assert "zip" not in config.MARKITDOWN_SUPPORTED
+        assert "epub" not in config.MARKITDOWN_SUPPORTED
 
     def test_mistral_ocr_supported_types(self):
         """Test Mistral OCR supported file types."""
@@ -197,6 +199,15 @@ class TestSafeParsingHelpers:
         monkeypatch.setenv("TEST_INT_VAR", "not_a_number")
         result = config._safe_int("TEST_INT_VAR", 42)
         assert result == 42
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_session_page_limit_requires_a_positive_value(self, monkeypatch, restore_runtime_config, value):
+        monkeypatch.setenv("MAX_PAGES_PER_SESSION", value)
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.MAX_PAGES_PER_SESSION == 1000
 
     def test_safe_float_below_min(self, monkeypatch):
         monkeypatch.setenv("TEST_FLOAT_VAR", "-1.5")

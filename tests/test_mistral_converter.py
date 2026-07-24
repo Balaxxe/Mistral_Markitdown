@@ -345,11 +345,28 @@ class TestCommitSessionPages:
         assert mistral_converter._commit_session_pages(0, 1) is False
         assert mistral_converter._session_pages_warned is True
 
-    def test_limit_disabled_short_circuits(self, monkeypatch):
+    def test_nonpositive_limit_fails_closed(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 0)
         mistral_converter.reset_session_page_counter()
-        assert mistral_converter._commit_session_pages(0, 100) is True
+        assert mistral_converter._reserve_session_pages(1) is False
+        assert mistral_converter._commit_session_pages(0, 100) is False
         assert mistral_converter._session_pages_processed == 0
+
+    def test_ocr_rejects_nonpositive_programmatic_page_limit(self, monkeypatch, tmp_path):
+        import mistral_converter.ocr as ocr_module
+
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 0)
+        document = tmp_path / "document.pdf"
+        document.write_bytes(b"%PDF")
+        client = MagicMock()
+
+        with patch.object(ocr_module, "_estimate_session_pages_for_ocr") as estimate:
+            ok, result, error = mistral_converter.process_with_ocr(client, document)
+
+        assert (ok, result) == (False, None)
+        assert "positive" in (error or "").lower()
+        estimate.assert_not_called()
+        client.ocr.process.assert_not_called()
 
 
 class TestSessionPageReservations:
@@ -3185,10 +3202,11 @@ class TestCleanupUploadedFilesEdgeCases:
 class TestCleanupTempFiles:
     """Lines 721-722: temporary file cleanup."""
 
-    def test_cleanup_existing_files(self, tmp_path):
-        f1 = tmp_path / "temp1.png"
+    def test_cleanup_existing_owned_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        f1 = tmp_path / "mistral_temp1.png"
         f1.write_bytes(b"temp")
-        f2 = tmp_path / "temp2.png"
+        f2 = tmp_path / "mistral_temp2.png"
         f2.write_bytes(b"temp")
 
         mistral_converter._cleanup_temp_files([f1, f2])
@@ -3203,11 +3221,19 @@ class TestCleanupTempFiles:
     def test_cleanup_empty_list(self):
         mistral_converter._cleanup_temp_files([])
 
-    def test_cleanup_none_in_list(self, tmp_path):
-        f1 = tmp_path / "temp.png"
+    def test_cleanup_none_in_list(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        f1 = tmp_path / "mistral_temp.png"
         f1.write_bytes(b"temp")
         mistral_converter._cleanup_temp_files([None, f1])
         assert not f1.exists()
+
+    def test_cleanup_does_not_remove_unowned_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        unowned = tmp_path / "important.png"
+        unowned.write_bytes(b"keep")
+        mistral_converter._cleanup_temp_files([unowned])
+        assert unowned.exists()
 
     def test_cleanup_delete_error(self, tmp_path):
         f1 = tmp_path / "temp.png"

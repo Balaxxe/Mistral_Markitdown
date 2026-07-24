@@ -635,7 +635,7 @@ PDF_IMAGE_USE_PDFTOCAIRO=true
 
 - **Type:** Integer
 - **Default:** `100`
-- **Description:** Cap pages rendered by pdf2image (`0` disables the cap). When the cap is enabled, conversion is refused if the page count cannot be determined safely.
+- **Description:** Additional cap for pages rendered by pdf2image. `0` defers to the positive `MAX_PAGES_PER_SESSION` cap; conversion is refused if the page count cannot be determined safely.
 
 ```ini
 PDF_IMAGE_MAX_PAGES=100
@@ -746,7 +746,7 @@ MAX_BATCH_FILES=100
 
 - **Type:** Integer
 - **Default:** `1000`
-- **Description:** Maximum OCR pages per session
+- **Description:** Shared finite maximum for OCR pages per session, batch OCR admission, PDF rendering, and table work. Must be at least `1`; `0` and negative environment values are rejected and fall back to `1000`.
 
 ```ini
 MAX_PAGES_PER_SESSION=1000
