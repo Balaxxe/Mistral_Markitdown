@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,9 +13,14 @@ import utils
 
 from .client import _http_client_exceptions
 from .facade import attr
-from .sdk_shims import httpx
 
 logger = utils.logger
+
+
+# Bound aggregate work before creating remote OCR uploads, and keep batch
+# result downloads from exhausting local memory or disk space.
+_MAX_BATCH_UPLOAD_TOTAL_BYTES = 1024 * 1024 * 1024
+_MAX_BATCH_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
 
 def _prepare_batch_entries(
@@ -74,6 +80,40 @@ def _prepare_batch_entries(
     return entries, uploaded_file_ids, None
 
 
+def _validate_batch_file_admission(file_paths: List[Path]) -> Optional[str]:
+    """Reject an unsafe batch before any Mistral upload is attempted."""
+    if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
+        return f"Batch contains {len(file_paths)} files; maximum allowed is {config.MAX_BATCH_FILES}"
+
+    estimated_pages = 0
+    aggregate_bytes = 0
+    for file_path in file_paths:
+        valid, error = utils.validate_file(file_path, mode="batch_ocr")
+        if not valid:
+            return error or f"Invalid batch file: {file_path.name}"
+
+        try:
+            aggregate_bytes += file_path.stat().st_size
+        except OSError as e:
+            return f"Cannot read batch file {file_path.name}: {e}"
+        if aggregate_bytes > _MAX_BATCH_UPLOAD_TOTAL_BYTES:
+            return (
+                f"Batch input size ({aggregate_bytes} bytes) exceeds aggregate limit "
+                f"({_MAX_BATCH_UPLOAD_TOTAL_BYTES} bytes)"
+            )
+
+        # Resolve through the package facade so callers and tests that patch the
+        # public compatibility surface continue to control the estimator.
+        estimated_pages += attr("_estimate_session_pages_for_ocr")(file_path, pages=None)
+        if config.MAX_PAGES_PER_SESSION > 0 and estimated_pages > config.MAX_PAGES_PER_SESSION:
+            return (
+                f"Batch estimated page count ({estimated_pages}) exceeds session limit "
+                f"({config.MAX_PAGES_PER_SESSION})"
+            )
+
+    return None
+
+
 def create_batch_ocr_file(
     file_paths: List[Path],
     output_file: Path,
@@ -104,6 +144,10 @@ def create_batch_ocr_file(
     Documentation:
         https://docs.mistral.ai/capabilities/batch/
     """
+    admission_error = _validate_batch_file_admission(file_paths)
+    if admission_error:
+        return False, None, admission_error
+
     client = attr("get_mistral_client")()
     if client is None:
         return False, None, "Mistral client not available"
@@ -346,7 +390,7 @@ def get_batch_job_status(
         return False, None, error_msg
 
 
-def download_batch_results(
+def download_batch_results(  # noqa: C901
     job_id: str,
     output_dir: Optional[Path] = None,
 ) -> Tuple[bool, Optional[Path], Optional[str]]:
@@ -382,24 +426,70 @@ def download_batch_results(
 
         output_path = output_dir / f"batch_ocr_results_{job_id}.jsonl"
 
-        # Download file content. SDK versions differ here:
-        # - older/test paths may return raw bytes
-        # - current SDK returns an httpx.Response stream wrapper
+        # The pinned Mistral SDK returns an unconsumed streaming response here.
+        # Reject eager compatibility payloads: checking them after download
+        # would be too late to prevent an attacker-controlled memory spike.
         file_content = client.files.download(file_id=job.output_file)
+        closer = getattr(file_content, "close", None)
 
-        if httpx is not None and isinstance(file_content, httpx.Response):
-            payload = file_content.read()
-            file_content.close()
-        elif isinstance(file_content, (bytes, bytearray, memoryview)):
-            payload = bytes(file_content)
-        elif hasattr(file_content, "content"):
-            payload = file_content.content
+        def close_download() -> None:
+            if callable(closer):
+                closer()
+
+        headers = getattr(file_content, "headers", {}) or {}
+        content_length = headers.get("content-length") if hasattr(headers, "get") else None
+        if content_length is not None:
+            try:
+                if int(content_length) > _MAX_BATCH_DOWNLOAD_BYTES:
+                    close_download()
+                    return False, None, "Batch download exceeds the maximum allowed size"
+            except (TypeError, ValueError):
+                close_download()
+                raise ValueError("Invalid Content-Length in batch download")
+
+        if isinstance(file_content, (bytes, bytearray, memoryview)):
+            close_download()
+            raise TypeError("Batch download requires a streaming response")
+        if getattr(file_content, "is_stream_consumed", False) is True:
+            close_download()
+            raise ValueError("Batch download response was already buffered; a streaming response is required")
+        if hasattr(file_content, "iter_bytes"):
+            chunks = file_content.iter_bytes()
         elif hasattr(file_content, "read"):
-            payload = file_content.read()
-        else:
-            raise TypeError(f"Unsupported batch download payload type: {type(file_content)!r}")
 
-        utils.atomic_write_binary(output_path, payload)
+            def read_chunks() -> Any:
+                while True:
+                    chunk = file_content.read(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+
+            chunks = read_chunks()
+        else:
+            close_download()
+            raise TypeError("Batch download requires a streaming response")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{output_path.name}.", suffix=".tmp", dir=output_dir)
+        total_bytes = 0
+        try:
+            with os.fdopen(fd, "wb") as temp_file:
+                for chunk in chunks:
+                    if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                        raise TypeError("Batch download stream yielded non-bytes data")
+                    total_bytes += len(chunk)
+                    if total_bytes > _MAX_BATCH_DOWNLOAD_BYTES:
+                        raise ValueError("Batch download exceeds the maximum allowed size")
+                    temp_file.write(chunk)
+            os.replace(temp_name, output_path)
+        except Exception:
+            try:
+                Path(temp_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        finally:
+            close_download()
 
         logger.info("Batch results saved to: %s", output_path)
         return True, output_path, None

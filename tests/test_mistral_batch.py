@@ -13,6 +13,7 @@ import config
 config.ensure_directories()
 
 import mistral_converter
+import mistral_converter.batch as batch_module
 
 # ============================================================================
 # _validate_document_url Tests
@@ -70,16 +71,23 @@ class TestDownloadBatchResults:
         mock_job.status = "SUCCESS"
         mock_job.output_file = "output_file_id"
 
+        response = MagicMock()
+        response.headers = {}
+        response.is_stream_consumed = False
+        response.iter_bytes.return_value = iter([b'{"result": "data"}\n'])
+
         with patch.object(mistral_converter, "get_mistral_client") as mock_get:
             mock_client = MagicMock()
             mock_client.batch.jobs.get.return_value = mock_job
-            mock_client.files.download.return_value = b'{"result": "data"}\n'
+            mock_client.files.download.return_value = response
             mock_get.return_value = mock_client
 
             ok, path, err = mistral_converter.download_batch_results("job_ok", output_dir=tmp_path)
 
         assert ok is True
         assert path.exists()
+        assert path.read_text() == '{"result": "data"}\n'
+        response.close.assert_called_once()
 
     def test_successful_download_httpx_response(self, tmp_path):
         mock_job = MagicMock()
@@ -91,7 +99,7 @@ class TestDownloadBatchResults:
             mock_client.batch.jobs.get.return_value = mock_job
             mock_client.files.download.return_value = httpx.Response(
                 200,
-                content=b'{"result": "streamed"}\n',
+                stream=httpx.ByteStream(b'{"result": "streamed"}\n'),
                 headers={"content-type": "application/octet-stream"},
             )
             mock_get.return_value = mock_client
@@ -101,6 +109,65 @@ class TestDownloadBatchResults:
         assert ok is True
         assert path.exists()
         assert path.read_text() == '{"result": "streamed"}\n'
+
+    def test_eager_payload_is_rejected_before_output(self, tmp_path):
+        mock_job = MagicMock(status="SUCCESS", output_file="output_file_id")
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.batch.jobs.get.return_value = mock_job
+            mock_client.files.download.return_value = b'{"result": "already buffered"}\n'
+            mock_get.return_value = mock_client
+            ok, path, error = mistral_converter.download_batch_results("job_eager", output_dir=tmp_path)
+        assert (ok, path) == (False, None)
+        assert "streaming response" in (error or "").lower()
+        assert not (tmp_path / "batch_ocr_results_job_eager.jsonl").exists()
+
+    def test_download_rejects_oversized_content_length(self, tmp_path, monkeypatch):
+        mock_job = MagicMock(status="SUCCESS", output_file="output_file_id")
+        response = MagicMock()
+        response.headers = {"content-length": "1025"}
+        monkeypatch.setattr(batch_module, "_MAX_BATCH_DOWNLOAD_BYTES", 1024)
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.batch.jobs.get.return_value = mock_job
+            mock_client.files.download.return_value = response
+            mock_get.return_value = mock_client
+            ok, path, error = mistral_converter.download_batch_results("job_too_large", output_dir=tmp_path)
+        assert (ok, path) == (False, None)
+        assert "maximum" in (error or "").lower()
+        response.iter_bytes.assert_not_called()
+
+    def test_chunked_over_limit_closes_and_preserves_existing_output(self, tmp_path, monkeypatch):
+        class ChunkedResponse:
+            headers = {}
+
+            def __init__(self):
+                self.closed = False
+
+            def iter_bytes(self):
+                yield b"a" * 600
+                yield b"b" * 600
+
+            def close(self):
+                self.closed = True
+
+        job_id = "job_stream_large"
+        output = tmp_path / f"batch_ocr_results_{job_id}.jsonl"
+        output.write_bytes(b"existing")
+        response = ChunkedResponse()
+        mock_job = MagicMock(status="SUCCESS", output_file="output_file_id")
+        monkeypatch.setattr(batch_module, "_MAX_BATCH_DOWNLOAD_BYTES", 1024)
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.batch.jobs.get.return_value = mock_job
+            mock_client.files.download.return_value = response
+            mock_get.return_value = mock_client
+            ok, path, error = mistral_converter.download_batch_results(job_id, output_dir=tmp_path)
+        assert (ok, path) == (False, None)
+        assert "maximum" in (error or "").lower()
+        assert response.closed is True
+        assert output.read_bytes() == b"existing"
+        assert list(tmp_path.glob(f".{output.name}.*.tmp")) == []
 
     def test_job_not_complete(self):
         mock_job = MagicMock()
@@ -310,6 +377,10 @@ class TestSubmitBatchOcrJob:
 class TestCreateBatchOcrFileFull:
     """Test batch file creation with all paths."""
 
+    @pytest.fixture(autouse=True)
+    def _allow_tmp_batch_inputs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+
     def test_successful_creation(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
@@ -323,26 +394,27 @@ class TestCreateBatchOcrFileFull:
         pdf2.write_bytes(b"%PDF")
         output = tmp_path / "batch.jsonl"
 
-        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
-            with patch.object(
-                mistral_converter,
-                "_upload_file_for_ocr_pair",
-                side_effect=[
-                    ("https://signed.url", "id-a"),
-                    ("https://signed.url", "id-b"),
-                ],
-            ):
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=1):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
                 with patch.object(
                     mistral_converter,
-                    "get_bbox_annotation_format",
-                    return_value=None,
+                    "_upload_file_for_ocr_pair",
+                    side_effect=[
+                        ("https://signed.url", "id-a"),
+                        ("https://signed.url", "id-b"),
+                    ],
                 ):
                     with patch.object(
                         mistral_converter,
-                        "get_document_annotation_format",
+                        "get_bbox_annotation_format",
                         return_value=None,
                     ):
-                        ok, path, err = mistral_converter.create_batch_ocr_file([pdf1, pdf2], output)
+                        with patch.object(
+                            mistral_converter,
+                            "get_document_annotation_format",
+                            return_value=None,
+                        ):
+                            ok, path, err = mistral_converter.create_batch_ocr_file([pdf1, pdf2], output)
 
         assert ok is True
         assert path == output
@@ -472,29 +544,84 @@ class TestCreateBatchOcrFileFull:
                 return ("https://signed/1", "file-1")
             return None
 
-        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
-            with patch.object(
-                mistral_converter,
-                "_upload_file_for_ocr_pair",
-                side_effect=_pair_side_effect,
-            ):
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=1):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
                 with patch.object(
                     mistral_converter,
-                    "get_bbox_annotation_format",
-                    return_value=None,
+                    "_upload_file_for_ocr_pair",
+                    side_effect=_pair_side_effect,
                 ):
                     with patch.object(
                         mistral_converter,
-                        "get_document_annotation_format",
+                        "get_bbox_annotation_format",
                         return_value=None,
                     ):
-                        ok, path_out, err = mistral_converter.create_batch_ocr_file([pdf1, pdf2], output)
+                        with patch.object(
+                            mistral_converter,
+                            "get_document_annotation_format",
+                            return_value=None,
+                        ):
+                            ok, path_out, err = mistral_converter.create_batch_ocr_file([pdf1, pdf2], output)
 
         assert ok is False
         assert path_out is None
         assert "strict" in err.lower()
         mock_client.files.delete.assert_called_once_with(file_id="file-1")
         assert not output.exists()
+
+    def test_rejects_over_file_limit_before_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 1)
+        first = tmp_path / "first.pdf"
+        second = tmp_path / "second.pdf"
+        first.write_bytes(b"%PDF")
+        second.write_bytes(b"%PDF")
+        with patch.object(mistral_converter, "get_mistral_client") as client:
+            ok, path, error = mistral_converter.create_batch_ocr_file([first, second], tmp_path / "batch.jsonl")
+        assert (ok, path) == (False, None)
+        assert "maximum" in (error or "").lower()
+        client.assert_not_called()
+
+    def test_rejects_invalid_file_before_upload(self, tmp_path):
+        invalid = tmp_path / "not-ocr.exe"
+        invalid.write_bytes(b"not a document")
+        with patch.object(mistral_converter, "get_mistral_client") as client:
+            ok, path, error = mistral_converter.create_batch_ocr_file([invalid], tmp_path / "batch.jsonl")
+        assert (ok, path) == (False, None)
+        assert "unsupported" in (error or "").lower()
+        client.assert_not_called()
+
+    def test_rejects_aggregate_page_budget_before_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+            with patch.object(mistral_converter, "get_mistral_client") as client:
+                ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+        assert (ok, path) == (False, None)
+        assert "page count" in (error or "").lower()
+        client.assert_not_called()
+
+    def test_rejects_aggregate_bytes_before_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(batch_module, "_MAX_BATCH_UPLOAD_TOTAL_BYTES", 5)
+        first = tmp_path / "first.pdf"
+        second = tmp_path / "second.pdf"
+        first.write_bytes(b"%PDF")
+        second.write_bytes(b"%PDF")
+        with patch.object(mistral_converter, "get_mistral_client") as client:
+            ok, path, error = mistral_converter.create_batch_ocr_file([first, second], tmp_path / "batch.jsonl")
+        assert (ok, path) == (False, None)
+        assert "aggregate" in (error or "").lower()
+        client.assert_not_called()
+
+    def test_rejects_oversized_file_before_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_OCR_MAX_FILE_SIZE_MB", 0)
+        pdf = tmp_path / "oversized.pdf"
+        pdf.write_bytes(b"%PDF")
+        with patch.object(mistral_converter, "get_mistral_client") as client:
+            ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+        assert (ok, path) == (False, None)
+        assert "too large" in (error or "").lower()
+        client.assert_not_called()
 
 
 # ============================================================================

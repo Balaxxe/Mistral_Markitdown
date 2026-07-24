@@ -381,10 +381,21 @@ def _cleanup_temp_files(temp_files: List[Path]) -> None:
     if not temp_files:
         return
 
+    try:
+        cache_dir = config.CACHE_DIR.resolve()
+    except OSError:
+        return
+
     for temp_file in temp_files:
         try:
-            if temp_file and temp_file.exists():
-                temp_file.unlink()
-                logger.debug("Deleted temporary file: %s", temp_file.name)
+            if not temp_file:
+                continue
+            resolved = temp_file.resolve()
+            if cache_dir not in resolved.parents or not resolved.name.startswith("mistral_"):
+                logger.warning("Refusing to clean up non-owned temporary file: %s", temp_file)
+                continue
+            if resolved.exists():
+                resolved.unlink()
+                logger.debug("Deleted temporary file: %s", resolved.name)
         except Exception as e:
             logger.warning("Could not delete temporary file %s: %s", temp_file.name, e)

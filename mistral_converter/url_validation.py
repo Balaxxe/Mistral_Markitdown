@@ -1,9 +1,11 @@
 """SSRF-safe document URL validation and signed-URL error classification."""
 
 import ipaddress
+import json
 import socket
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as DnsTimeoutError
+import subprocess
+import sys
+import threading
 from typing import Any, Optional, Tuple
 
 import config
@@ -71,9 +73,11 @@ def is_signed_url_expiry_error(message: Optional[str]) -> bool:
 # This ensures .env settings are honored as documented in README.md
 # See: config.OCR_MIN_TEXT_LENGTH, config.OCR_MIN_UNIQUENESS_RATIO, etc.
 
-# Process-global page counter — suitable for CLI use.  A multi-tenant
-# service would need per-request counters instead.
-_dns_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mistral-dns")
+# A short-lived process lets us terminate a stuck ``getaddrinfo`` call. Limit
+# concurrent children so a service wrapper cannot turn hostile hostnames into
+# unbounded process creation.
+_DNS_RESOLVER_MAX_PROCESSES = 4
+_dns_process_slots = threading.BoundedSemaphore(_DNS_RESOLVER_MAX_PROCESSES)
 
 
 def _is_forbidden_address(addr: Any) -> bool:
@@ -101,6 +105,46 @@ def _validate_ip_str(ip_str: str, source: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def _resolve_dns_in_subprocess(hostname: str) -> list[str]:
+    """Resolve DNS in a killable, bounded subprocess without using a shell."""
+    resolver = (
+        "import json,socket,sys; "
+        "print(json.dumps(sorted({item[4][0] for item in "
+        "socket.getaddrinfo(sys.argv[1],None,proto=socket.IPPROTO_TCP) "
+        "if item and item[4]})))"
+    )
+    if not _dns_process_slots.acquire(blocking=False):
+        raise socket.timeout("DNS resolver capacity exhausted")
+
+    subprocess_kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        subprocess_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-I", "-c", resolver, hostname],
+                capture_output=True,
+                text=True,
+                timeout=config.MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS,
+                check=False,
+                **subprocess_kwargs,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise socket.timeout("DNS resolution timed out") from exc
+    finally:
+        _dns_process_slots.release()
+
+    if completed.returncode != 0:
+        raise socket.gaierror(completed.stderr.strip() or "DNS resolution failed")
+    try:
+        resolved_ips = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise OSError("DNS resolver returned invalid data") from exc
+    if not isinstance(resolved_ips, list) or not all(isinstance(ip, str) for ip in resolved_ips):
+        raise OSError("DNS resolver returned invalid addresses")
+    return resolved_ips
+
+
 def _resolve_and_validate_dns(
     hostname: str,
     strict_dns: Optional[bool] = None,
@@ -109,18 +153,7 @@ def _resolve_and_validate_dns(
     if strict_dns is None:
         strict_dns = config.MISTRAL_DOCUMENT_URL_STRICT_DNS
     try:
-        _future = _dns_executor.submit(socket.getaddrinfo, hostname, None, proto=socket.IPPROTO_TCP)
-        try:
-            infos = _future.result(timeout=config.MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS)
-        except DnsTimeoutError:
-            # Best-effort cancel so the worker thread returns to the pool instead
-            # of staying blocked in getaddrinfo(). The C call is not actually
-            # interruptible, but marking the future cancelled keeps the pool
-            # clean for future callers.
-            _future.cancel()
-            raise socket.timeout("DNS resolution timed out")
-        resolved_ips = {str(info[4][0]) for info in infos if info and info[4]}
-        for ip in resolved_ips:
+        for ip in _resolve_dns_in_subprocess(hostname):
             ok, err = _validate_ip_str(ip, f"{hostname} -> {ip}")
             if not ok:
                 return ok, err

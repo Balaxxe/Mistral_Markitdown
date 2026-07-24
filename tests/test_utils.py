@@ -36,6 +36,52 @@ class TestSetupLogging:
         file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) == 0
 
+    def test_console_logging_sanitizes_untrusted_arguments(self, capsys):
+        logger = utils.setup_logging()
+
+        logger.info("Processing %s", "evil\x1b[31m.pdf\nWARNING: forged\u009b31m")
+
+        output = capsys.readouterr().out
+        assert "\x1b" not in output
+        assert "\u009b" not in output
+        assert "evil.pdf" in output
+        assert r"\nWARNING: forged31m" in output
+        assert output.count("\n") == 1
+
+    def test_console_logging_sanitizes_path_and_exception_text(self, capsys):
+        logger = utils.setup_logging()
+        hostile_path = Path("evil\x1b[31m.pdf\nERROR: forged")
+
+        logger.error("Opening %s", hostile_path)
+        try:
+            raise OSError(f"failed: {hostile_path}")
+        except OSError:
+            logger.exception("Conversion failed")
+
+        output = capsys.readouterr().out
+        assert "\x1b" not in output
+        assert "\nERROR: forged" not in output
+        assert r"\nERROR: forged" in output
+        assert output.count("\n") == 2
+
+    def test_logging_does_not_propagate_unsanitized_record(self):
+        logger = utils.setup_logging()
+        assert logger.propagate is False
+
+    def test_file_logging_sanitizes_untrusted_record(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "SAVE_PROCESSING_LOGS", True)
+        log_file = tmp_path / "processing.log"
+        logger = utils.setup_logging(log_file=str(log_file))
+
+        logger.info("Processing %s", Path("evil\x1b[31m.pdf\nWARNING: forged"))
+        for handler in logger.handlers:
+            handler.flush()
+
+        output = log_file.read_text(encoding="utf-8")
+        assert "\x1b" not in output
+        assert "\nWARNING: forged" not in output
+        assert r"\nWARNING: forged" in output
+
 
 class TestIntelligentCache:
     """Test the IntelligentCache class."""
@@ -1006,6 +1052,12 @@ class TestSanitizeForTerminal:
         result = utils.sanitize_for_terminal("safe\x00text")
         assert "\x00" not in result
         assert "safe" in result and "text" in result
+
+    def test_strips_raw_c1_controls(self):
+        result = utils.sanitize_for_terminal("safe\u0085\u009b31mtext")
+        assert "\u0085" not in result
+        assert "\u009b" not in result
+        assert result == "safe31mtext"
 
     def test_plain_text_unchanged(self):
         result = utils.sanitize_for_terminal("Normal text 123")

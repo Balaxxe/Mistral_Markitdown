@@ -106,6 +106,8 @@ class TestFileTypeConfiguration:
         assert "png" in config.MARKITDOWN_SUPPORTED
         assert "webp" in config.MARKITDOWN_SUPPORTED
         assert "avif" in config.MARKITDOWN_SUPPORTED
+        assert "zip" not in config.MARKITDOWN_SUPPORTED
+        assert "epub" not in config.MARKITDOWN_SUPPORTED
 
     def test_mistral_ocr_supported_types(self):
         """Test Mistral OCR supported file types."""

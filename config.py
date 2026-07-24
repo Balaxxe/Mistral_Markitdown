@@ -765,7 +765,6 @@ MARKITDOWN_SUPPORTED = {
     "csv",
     "json",
     "xml",
-    "epub",
     "pdf",
     "png",
     "jpg",
@@ -779,7 +778,6 @@ MARKITDOWN_SUPPORTED = {
     "wav",
     "m4a",
     "flac",  # Audio (requires plugins)
-    "zip",  # ZIP archive (recursive extraction)
     "ipynb",  # Jupyter notebooks
     "msg",  # Outlook MSG (requires extract-msg)
     "txt",  # Plain text

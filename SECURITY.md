@@ -62,6 +62,7 @@ Document conversion depends on MarkItDown, pdfplumber, Poppler (pdf2image), and 
 - **Mistral OCR path:** Files exceeding `MISTRAL_OCR_MAX_FILE_SIZE_MB` (default: 200 MB) are rejected before upload.
 - **Document QnA:** Files exceeding `MISTRAL_QNA_MAX_FILE_SIZE_MB` (default: 50 MB) are rejected.
 - **PDF table extraction and PDF-to-images:** Skipped when the PDF exceeds `max(MARKITDOWN_MAX_FILE_SIZE_MB, MISTRAL_OCR_MAX_FILE_SIZE_MB)` (see `config.pdf_heavy_work_max_file_size_mb()` / `utils.pdf_exceeds_heavy_work_limit`) to avoid expensive local work on files that would fail size checks on the conversion path.
+- **ZIP and EPUB:** Local conversion is disabled until MarkItDown archive traversal can enforce shared decompressed-byte, member-count, and nesting-depth budgets.
 
 ### File Upload Security
 
@@ -83,7 +84,12 @@ All document URLs (for QnA and streaming) are validated before use:
 - **`MISTRAL_DOCUMENT_URL_STRICT_DNS`:** Default `true` — user-supplied document URLs that fail local DNS resolution or time out are rejected (fail closed). Post-upload Mistral signed URLs (file QnA) relax this check so local DNS hiccups do not break the upload→query path. Set to `false` only if you need fail-open for unresolved public hostnames.
 - **`ALLOW_INSECURE_MISTRAL_SERVER`:** Default `false`. Cleartext `http://` values for `MISTRAL_SERVER_URL` are rejected unless this is explicitly enabled (API keys must not travel in cleartext).
 
-**Known limitation (TOCTOU):** The local DNS resolution check cannot fully prevent DNS rebinding attacks because Mistral's servers independently resolve the hostname when fetching the document. The local check remains valuable as a first-pass filter against obvious internal targets. For high-security deployments, restrict QnA to pre-uploaded files (via `query_document_file`) rather than arbitrary URLs.
+**Known limitation (server-side fetch):** The local DNS resolution check cannot fully prevent DNS rebinding or
+redirect-to-private-network attacks because Mistral's servers independently resolve and fetch the document URL.
+Mistral's public Document QnA documentation requires a public, API-accessible URL but does not document DNS
+pinning, redirect-target revalidation, metadata-address filtering, or egress controls. The local check remains
+valuable as a first-pass filter against obvious internal targets. For high-security deployments, restrict QnA to
+pre-uploaded files (via `query_document_file`) rather than arbitrary URLs.
 
 ### Batch Job ID Validation
 
@@ -117,11 +123,17 @@ The following limits prevent runaway API spend and resource exhaustion:
 | `MISTRAL_OCR_MAX_FILE_SIZE_MB` | 200     | Hard reject before Mistral upload               |
 | `MISTRAL_QNA_MAX_FILE_SIZE_MB` | 50      | Hard reject before Document QnA upload          |
 | `MAX_BATCH_FILES`              | 100     | Hard reject in smart, MarkItDown, OCR, PDF→images, and batch modes |
-| `MAX_PAGES_PER_SESSION`        | 1000    | Hard reject (refuses further OCR after limit)   |
-| `PDF_IMAGE_MAX_PAGES`          | 100     | Cap local pdf2image rendering and reject unknown page counts (`0` = unlimited) |
+| `MAX_PAGES_PER_SESSION`        | 1000    | OCR/batch admission, PDF rendering, and shared table-work cap |
+| `PDF_IMAGE_MAX_PAGES`          | 100     | Additional PDF-rendering cap; combined with the session page limit (`0` defers to the session limit) |
 | `MAX_CONCURRENT_FILES`         | 5       | Thread pool cap for parallel processing         |
 | `MISTRAL_BATCH_TIMEOUT_HOURS`  | 24      | Batch job auto-cancellation                     |
 | `UPLOAD_RETENTION_DAYS`        | 7       | Auto-cleanup of uploaded files on Mistral       |
+
+Additional fixed safety ceilings bound OCR table expansion (10 MiB per page and 50 MiB aggregate text), extracted
+OCR images (100 images, 7 MiB each, and 50 MiB aggregate decoded data), batch input (1 GiB aggregate), and batch
+result downloads (512 MiB). Batch downloads require an unconsumed streaming SDK response; eager compatibility
+payloads are rejected because they cannot be bounded before allocation. Limit violations fail before publishing
+the affected output set.
 
 ---
 
@@ -143,7 +155,9 @@ Metadata strings in YAML frontmatter are escaped via `json.dumps` to prevent inj
 
 ### Terminal Output
 
-QnA answers and other untrusted text are sanitized to strip ANSI escape sequences and non-printable control characters before display in the terminal (`utils.sanitize_for_terminal`).
+QnA answers and operational log records are sanitized to strip ANSI escape sequences and non-printable control
+characters before terminal display. Embedded carriage returns and newlines in log values are escaped so one
+attacker-controlled value cannot forge additional log records.
 
 ---
 

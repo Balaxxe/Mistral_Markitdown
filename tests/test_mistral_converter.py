@@ -3185,10 +3185,11 @@ class TestCleanupUploadedFilesEdgeCases:
 class TestCleanupTempFiles:
     """Lines 721-722: temporary file cleanup."""
 
-    def test_cleanup_existing_files(self, tmp_path):
-        f1 = tmp_path / "temp1.png"
+    def test_cleanup_existing_owned_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        f1 = tmp_path / "mistral_temp1.png"
         f1.write_bytes(b"temp")
-        f2 = tmp_path / "temp2.png"
+        f2 = tmp_path / "mistral_temp2.png"
         f2.write_bytes(b"temp")
 
         mistral_converter._cleanup_temp_files([f1, f2])
@@ -3203,11 +3204,19 @@ class TestCleanupTempFiles:
     def test_cleanup_empty_list(self):
         mistral_converter._cleanup_temp_files([])
 
-    def test_cleanup_none_in_list(self, tmp_path):
-        f1 = tmp_path / "temp.png"
+    def test_cleanup_none_in_list(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        f1 = tmp_path / "mistral_temp.png"
         f1.write_bytes(b"temp")
         mistral_converter._cleanup_temp_files([None, f1])
         assert not f1.exists()
+
+    def test_cleanup_does_not_remove_unowned_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        unowned = tmp_path / "important.png"
+        unowned.write_bytes(b"keep")
+        mistral_converter._cleanup_temp_files([unowned])
+        assert unowned.exists()
 
     def test_cleanup_delete_error(self, tmp_path):
         f1 = tmp_path / "temp.png"
