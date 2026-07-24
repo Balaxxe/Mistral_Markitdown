@@ -43,6 +43,43 @@ class TestQueryDocument:
         assert ok is False
         mistral_converter.reset_mistral_client()
 
+    def test_custom_server_rejects_arbitrary_document_url(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_SERVER_URL", "https://private-api.example")
+        monkeypatch.setattr(config, "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", False, raising=False)
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()) as get_client:
+            ok, answer, err = mistral_converter.query_document("https://example.com/doc.pdf", "what?")
+        assert ok is False
+        assert answer is None
+        assert "MISTRAL_SERVER_URL" in (err or "")
+        get_client.assert_not_called()
+
+    def test_custom_server_rejects_strict_dns_override_bypass(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_SERVER_URL", "https://private-api.example")
+        monkeypatch.setattr(config, "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", False, raising=False)
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()) as get_client:
+            ok, answer, err = mistral_converter.query_document(
+                "https://example.com/doc.pdf",
+                "what?",
+                strict_dns=False,
+            )
+        assert ok is False
+        assert answer is None
+        assert "MISTRAL_SERVER_URL" in (err or "")
+        get_client.assert_not_called()
+
+    def test_custom_server_allows_opted_in_document_url(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_SERVER_URL", "https://private-api.example")
+        monkeypatch.setattr(config, "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", True, raising=False)
+        mock_choice = MagicMock()
+        mock_choice.message.content = "ok"
+        mock_response = MagicMock(choices=[mock_choice])
+        mock_client = MagicMock()
+        mock_client.chat.complete.return_value = mock_response
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            with patch("mistral_converter.url_validation._resolve_dns_in_subprocess", return_value=["8.8.8.8"]):
+                ok, answer, err = mistral_converter.query_document("https://example.com/doc.pdf", "what?")
+        assert (ok, answer, err) == (True, "ok", None)
+
 
 # ============================================================================
 # query_document_stream Tests
@@ -107,21 +144,65 @@ class TestQueryDocumentFile:
     def test_successful_query(self, tmp_path):
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF small content")
+        mock_choice = MagicMock()
+        mock_choice.message.content = "The answer is 42"
+        mock_client = MagicMock()
+        mock_client.chat.complete.return_value = MagicMock(choices=[mock_choice])
 
-        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
             with patch.object(
                 mistral_converter,
                 "upload_file_for_ocr",
                 return_value="https://signed.url/doc",
             ):
-                with patch.object(
-                    mistral_converter,
-                    "query_document",
-                    return_value=(True, "The answer is 42", None),
-                ):
-                    ok, answer, err = mistral_converter.query_document_file(pdf, "what?")
+                ok, answer, err = mistral_converter.query_document_file(pdf, "what?")
         assert ok is True
         assert answer == "The answer is 42"
+
+    def test_custom_server_keeps_uploaded_file_qna_path(self, tmp_path, monkeypatch):
+        pdf = tmp_path / "test.pdf"
+        pdf.write_bytes(b"%PDF small content")
+        monkeypatch.setattr(config, "MISTRAL_SERVER_URL", "https://private-api.example")
+        monkeypatch.setattr(config, "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", False, raising=False)
+        mock_choice = MagicMock()
+        mock_choice.message.content = "answer"
+        mock_client = MagicMock()
+        mock_client.chat.complete.return_value = MagicMock(choices=[mock_choice])
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            with patch.object(mistral_converter, "upload_file_for_ocr", return_value="https://signed.url/doc"):
+                ok, answer, err = mistral_converter.query_document_file(pdf, "what?")
+
+        assert (ok, answer, err) == (True, "answer", None)
+        document_part = mock_client.chat.complete.call_args.kwargs["messages"][1]["content"][1]
+        assert document_part["document_url"] == "https://signed.url/doc"
+
+    def test_custom_server_stream_rejects_strict_dns_override_bypass(self, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_SERVER_URL", "https://private-api.example")
+        monkeypatch.setattr(config, "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", False, raising=False)
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()) as get_client:
+            ok, stream, err = mistral_converter.query_document_stream(
+                "https://example.com/doc.pdf",
+                "what?",
+                strict_dns=False,
+            )
+        assert ok is False
+        assert stream is None
+        assert "MISTRAL_SERVER_URL" in (err or "")
+        get_client.assert_not_called()
+
+    def test_exception_error_redacts_signed_url(self, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.chat.complete.side_effect = Exception(
+            "download https://bucket.example/file?X-Amz-Signature=secret&token=also-secret failed"
+        )
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            with patch("mistral_converter.url_validation._resolve_dns_in_subprocess", return_value=["8.8.8.8"]):
+                ok, answer, err = mistral_converter.query_document("https://example.com/doc.pdf", "what?")
+        assert ok is False
+        assert answer is None
+        assert "secret" not in (err or "")
+        assert "X-Amz-Signature=<redacted>" in (err or "")
 
 
 # ============================================================================

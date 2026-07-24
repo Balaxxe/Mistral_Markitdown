@@ -1,7 +1,7 @@
 """Focused resource-boundary tests for modular Mistral OCR parsing."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -86,6 +86,164 @@ def test_parse_response_clears_partial_data_when_aggregate_text_limit_is_exceede
     assert result["pages"] == []
     assert result["full_text"] == ""
     assert "aggregate" in (result["parse_error"] or "")
+
+
+def test_parse_rejects_image_count_before_retaining_page_payloads(monkeypatch):
+    monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", True)
+    monkeypatch.setattr(config, "MISTRAL_IMAGE_LIMIT", 1)
+    response = {
+        "pages": [
+            {
+                "markdown": "text",
+                "images": [{"base64": "YQ=="}, {"base64": "Yg=="}],
+            }
+        ]
+    }
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert result["full_text"] == ""
+    assert "image count" in (result["parse_error"] or "")
+
+
+def test_image_count_is_checked_before_payload_property_access(monkeypatch):
+    class UnreadablePayload:
+        @property
+        def image_base64(self):
+            raise AssertionError("payload accessed before image-count admission")
+
+    monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", True)
+    monkeypatch.setattr(config, "MISTRAL_IMAGE_LIMIT", 1)
+
+    with pytest.raises(ocr.OCRResponseLimitError, match="image count"):
+        ocr._parse_page_images([UnreadablePayload(), UnreadablePayload()], {})
+
+
+def test_payloadless_images_count_toward_cross_page_limit(monkeypatch):
+    monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", True)
+    monkeypatch.setattr(config, "MISTRAL_IMAGE_LIMIT", 1)
+    response = {
+        "pages": [
+            {"markdown": "first", "images": [{"id": "one"}]},
+            {"markdown": "second", "images": [{"id": "two"}]},
+        ]
+    }
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert "image count" in (result["parse_error"] or "")
+
+
+def test_structured_fields_share_one_response_byte_budget(monkeypatch):
+    monkeypatch.setattr(ocr, "_MAX_OCR_STRUCTURED_TOTAL_BYTES", 10)
+    response = {
+        "pages": [
+            {"markdown": "first", "header": "123456"},
+            {"markdown": "second", "footer": "abcdef"},
+        ]
+    }
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert "structured fields" in (result["parse_error"] or "")
+
+
+def test_page_count_is_checked_before_page_property_access(monkeypatch):
+    class UnreadablePage:
+        @property
+        def markdown(self):
+            raise AssertionError("page accessed before count admission")
+
+    monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1)
+    response = MagicMock()
+    response.bbox_annotations = None
+    response.document_annotation = None
+    response.pages = [UnreadablePage(), UnreadablePage()]
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert "page count" in (result["parse_error"] or "")
+
+
+def test_parse_checks_data_uri_length_before_copying_payload(monkeypatch):
+    monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", True)
+    monkeypatch.setattr(ocr, "MAX_EXTRACTED_IMAGE_ENCODED_BYTES", 4)
+    response = {"pages": [{"markdown": "text", "images": [{"base64": "data:image/png;base64,AAAAA"}]}]}
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert "encoded-byte" in (result["parse_error"] or "")
+
+
+def test_parse_checks_payload_length_before_ascii_scan(monkeypatch):
+    class ScanDetectingString(str):
+        def isascii(self):
+            raise AssertionError("ASCII scan ran before encoded-length admission")
+
+    monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", True)
+    monkeypatch.setattr(ocr, "MAX_EXTRACTED_IMAGE_ENCODED_BYTES", 4)
+    response = {"pages": [{"markdown": "text", "images": [{"base64": ScanDetectingString("AAAAA")}]}]}
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert "encoded-byte" in (result["parse_error"] or "")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"pages": [{"markdown": "ok", "hyperlinks": [{"url": "x" * 9}]}]},
+        {"pages": [{"markdown": "ok", "header": "x" * 9}]},
+        {"bbox_annotations": [{"label": "x" * 9}], "pages": [{"markdown": "ok"}]},
+        {"document_annotation": '{"x":"' + ("x" * 9) + '"}', "pages": [{"markdown": "ok"}]},
+    ],
+)
+def test_parse_rejects_oversized_structured_fields(monkeypatch, response):
+    monkeypatch.setattr(ocr, "_MAX_OCR_STRUCTURED_STRING_BYTES", 8)
+    monkeypatch.setattr(ocr, "_MAX_OCR_HEADER_FOOTER_BYTES", 8)
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert result["full_text"] == ""
+    assert result["parse_error"]
+
+
+def test_object_response_structured_annotation_is_bounded(monkeypatch):
+    monkeypatch.setattr(ocr, "_MAX_OCR_STRUCTURED_DEPTH", 1)
+    response = MagicMock()
+    response.bbox_annotations = None
+    response.document_annotation = {"outer": {"inner": "value"}}
+    response.pages = None
+    response.markdown = None
+    response.text = None
+    response.content = None
+
+    result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert "nesting" in (result["parse_error"] or "")
+
+
+def test_document_annotation_node_limit_runs_before_json_decode(monkeypatch):
+    monkeypatch.setattr(ocr, "_MAX_OCR_STRUCTURED_NODES", 3)
+    response = {
+        "document_annotation": "[0, 0, 0]",
+        "pages": [{"markdown": "ok"}],
+    }
+
+    with patch.object(ocr.json, "loads", wraps=ocr.json.loads) as loads:
+        result = ocr._parse_ocr_response(response, Path("test.pdf"))
+
+    assert result["pages"] == []
+    assert "item limit" in (result["parse_error"] or "")
+    loads.assert_not_called()
 
 
 def _configure_post_improvement_pipeline(monkeypatch, tmp_path, improved_text):

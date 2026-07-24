@@ -70,7 +70,7 @@ class TestModeConvertSmart:
     def test_scanned_pdf_routes_to_ocr(self, mock_local, mock_mistral, tmp_path, monkeypatch):
         """Scanned PDFs (no text layer) should route to Mistral OCR."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
 
         pdf_file = tmp_path / "scanned.pdf"
@@ -101,7 +101,7 @@ class TestModeConvertSmart:
     def test_text_pdf_routes_to_markitdown(self, mock_local, tmp_path, monkeypatch):
         """Text-based PDFs should route to MarkItDown (free, faster)."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
 
@@ -132,7 +132,7 @@ class TestModeConvertSmart:
     ):
         """Text-based PDF over MarkItDown size limit but within OCR limit uses Mistral."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
         monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 1)
@@ -167,7 +167,7 @@ class TestModeConvertSmart:
     def test_docx_always_routes_to_markitdown(self, mock_local, tmp_path, monkeypatch):
         """DOCX should always use MarkItDown, even with API key set."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
 
@@ -185,7 +185,7 @@ class TestModeConvertSmart:
     def test_image_routes_to_ocr(self, mock_mistral, tmp_path, monkeypatch):
         """Image files should always route to Mistral OCR."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
 
         png_file = tmp_path / "scan.png"
@@ -206,7 +206,7 @@ class TestModeConvertSmart:
     def test_pdf_over_heavy_limit_skips_table_extraction(self, mock_local, tmp_path, monkeypatch):
         """Oversized PDFs must not run extract_all_tables in smart mode."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
         monkeypatch.setattr(config, "VERBOSE_PROGRESS", False)
         monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 1)
@@ -233,7 +233,7 @@ class TestModeConvertSmart:
     def test_no_api_key_all_to_markitdown(self, mock_local, tmp_path, monkeypatch):
         """Without API key, all files (even images) route to MarkItDown."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
 
@@ -251,7 +251,7 @@ class TestModeConvertSmart:
     def test_txt_routes_to_markitdown(self, mock_local, tmp_path, monkeypatch):
         """txt files should always route to MarkItDown."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
 
@@ -270,7 +270,7 @@ class TestModeConvertSmart:
     def test_pdf_table_extraction_runs(self, mock_local, mock_mistral, tmp_path, monkeypatch):
         """PDF table extraction should run regardless of OCR routing."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
 
         pdf_file = tmp_path / "tables.pdf"
@@ -307,6 +307,30 @@ class TestModeConvertSmart:
 
         assert success is False
         assert "MAX_BATCH_FILES" in message
+
+    def test_nonpositive_batch_limit_fails_closed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        success, message = main.mode_markitdown_only([tmp_path / "doc.txt"])
+        assert success is False
+        assert "positive" in message.lower()
+
+
+class TestMarkItDownStdin:
+    """Exercise the stdin conversion boundary without mocking MarkItDown."""
+
+    def test_converts_plain_text_stream_to_output(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
+        engine = MagicMock()
+        engine.convert_stream.side_effect = lambda stream, **_kwargs: MagicMock(markdown=stream.read().decode("utf-8"))
+
+        with patch.object(local_converter, "get_markitdown_instance", return_value=engine):
+            success, message = main.mode_markitdown_stdin(b"stdin integration body", "note.txt")
+
+        assert success is True
+        output_path = tmp_path / "note.md"
+        assert str(output_path) in message
+        assert "stdin integration body" in output_path.read_text(encoding="utf-8")
+        engine.convert_stream.assert_called_once()
 
 
 # ============================================================================
@@ -755,13 +779,32 @@ class TestModeDocumentQna:
         assert success is False
         assert "no answer content" in msg.lower()
 
+    def test_interactive_quit_does_not_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        with _patch_mistral_converter_everywhere() as mock_mc:
+            mock_mc.get_mistral_client.return_value = MagicMock()
+            with patch("builtins.input", return_value="quit"):
+                success, msg = main.mode_document_qna([pdf])
+        assert success is False
+        assert "no questions" in msg.lower()
+        mock_mc.upload_file_for_ocr.assert_not_called()
+
+    def test_qna_answer_formatting_prefixes_lines_and_neutralizes_cr(self):
+        formatted, ended_at_line_start = _modes_qna._format_qna_answer_text("first\r\nsecond\nthird")
+        assert formatted == "| first\\r\n| second\n| third"
+        assert ended_at_line_start is False
+
     def test_non_interactive_stream_exception_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
         pdf = tmp_path / "doc.pdf"
         pdf.write_bytes(b"%PDF-1.4")
 
         def _bad_stream():
-            raise RuntimeError("network reset")
+            raise RuntimeError(
+                "network reset for https://bucket.example/doc?X-Amz-Signature=secret&X-Goog-Credential=also-secret"
+            )
             yield  # pragma: no cover — makes this a generator; raises on first iteration
 
         with _patch_mistral_converter_everywhere() as mock_mc:
@@ -773,6 +816,9 @@ class TestModeDocumentQna:
             success, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
         assert success is False
         assert "stream failed" in msg.lower()
+        assert "secret" not in msg
+        assert "X-Amz-Signature=<redacted>" in msg
+        assert "X-Goog-Credential=<redacted>" in msg
 
 
 # ============================================================================
@@ -1052,7 +1098,7 @@ class TestModeMaintenance:
 
         with patch.object(mistral_converter, "get_mistral_client", return_value=None):
             ok, msg = main.mode_maintenance()
-        assert ok is True
+        assert ok is False
 
     def test_upload_cleanup_exception(self, monkeypatch):
         """Upload cleanup when an exception is raised."""
@@ -1062,7 +1108,26 @@ class TestModeMaintenance:
 
         with patch.object(mistral_converter, "get_mistral_client", side_effect=Exception("API error")):
             ok, msg = main.mode_maintenance()
-        assert ok is True
+        assert ok is False
+
+    def test_remote_upload_delete_failure_is_not_reported_as_success(self, monkeypatch):
+        monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
+        monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", True)
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        client = MagicMock()
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+            with patch.object(
+                mistral_converter,
+                "cleanup_uploaded_files",
+                side_effect=RuntimeError("remote delete failed"),
+            ) as cleanup:
+                ok, msg = main.mode_maintenance()
+
+        assert ok is False
+        assert "incomplete" in msg.lower()
+        cleanup.assert_called_once_with(client, raise_on_error=True)
 
     def test_upload_cleanup_no_api_key(self, monkeypatch):
         """Upload cleanup is skipped without an API key."""
@@ -1092,7 +1157,7 @@ class TestModeMaintenance:
             with patch.object(mistral_converter, "cleanup_uploaded_files") as cleanup:
                 ok, _msg = main.mode_maintenance()
 
-        assert ok is True
+        assert ok is False
         get_client.assert_not_called()
         cleanup.assert_not_called()
 
@@ -1110,7 +1175,7 @@ class TestModeMaintenance:
             with patch.object(mistral_converter, "cleanup_uploaded_files") as cleanup:
                 ok, _msg = main.mode_maintenance()
 
-        assert ok is True
+        assert ok is False
         get_client.assert_not_called()
         cleanup.assert_not_called()
 
@@ -1128,7 +1193,7 @@ class TestModeMaintenance:
 
         assert ok is True
         assert "2 old uploaded" in msg
-        cleanup.assert_called_once_with(mock_client)
+        cleanup.assert_called_once_with(mock_client, raise_on_error=True)
 
     @pytest.mark.parametrize(("answer", "expected"), [("yes", True), ("YES", True), ("no", False), ("y", False)])
     def test_account_wide_cleanup_interactive_requires_exact_yes(self, answer, expected, monkeypatch):
@@ -1404,7 +1469,7 @@ class TestModeConvertSmartExpanded:
         """Lines 192-193: table extraction throws exception."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "")
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path / "out")
         (tmp_path / "out").mkdir()
 
@@ -1436,7 +1501,7 @@ class TestModeConvertSmartExpanded:
         """Lines 333-388: full mode_convert_smart execution."""
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)
-        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 100)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path / "out")
         (tmp_path / "out").mkdir()
 
@@ -1852,7 +1917,7 @@ class TestModeDocumentQnaExpanded:
         mock_client = MagicMock()
         with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
             with patch.object(mistral_converter, "upload_file_for_ocr", return_value=None):
-                ok, msg = main.mode_document_qna([pdf])
+                ok, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
         assert ok is False
         assert "Failed to upload" in msg
 
@@ -1917,7 +1982,7 @@ class TestModeDocumentQnaExpanded:
         assert "0 question" in msg
 
     @pytest.mark.parametrize("answer", ["", "exit", "quit"])
-    def test_qna_immediate_cancel_succeeds(self, answer, tmp_path, monkeypatch):
+    def test_qna_immediate_cancel_fails_without_upload(self, answer, tmp_path, monkeypatch):
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF-1.4")
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
@@ -1933,8 +1998,8 @@ class TestModeDocumentQnaExpanded:
                 with patch("builtins.input", return_value=answer):
                     ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
-        assert "0 question" in msg
+        assert ok is False
+        assert "no questions" in msg.lower()
 
     def test_qna_keyboard_interrupt(self, tmp_path, monkeypatch):
         """KeyboardInterrupt breaks QnA loop."""
@@ -1955,8 +2020,8 @@ class TestModeDocumentQnaExpanded:
                 with patch("builtins.input", side_effect=KeyboardInterrupt):
                     ok, msg = main.mode_document_qna([pdf])
 
-        assert ok is True
-        assert "0 question" in msg
+        assert ok is False
+        assert "no questions" in msg.lower()
 
     def test_qna_stream_iteration_error(self, tmp_path, monkeypatch):
         """Lines 378-379: stream raises exception during iteration."""
@@ -2106,6 +2171,20 @@ class TestValidateArgsScenarios:
             ["main.py", "--mode", "qna", "--qna-document-url", "https://example.com/a.pdf"],
             "--qna-document-url requires --no-interactive",
         )
+
+    @pytest.mark.parametrize(
+        ("argv", "fragment"),
+        [
+            (["main.py", "--mode", "qna", "--qna-question", "why"], "--qna-question requires --no-interactive"),
+            (
+                ["main.py", "--mode", "batch_ocr", "--batch-action", "submit"],
+                "--batch-action requires --no-interactive",
+            ),
+            (["main.py", "--mode", "batch_ocr", "--batch-job-id", "job-1"], "--batch-job-id requires --no-interactive"),
+        ],
+    )
+    def test_automation_options_require_no_interactive(self, monkeypatch, argv, fragment):
+        self._expect_argparse_error(monkeypatch, argv, fragment)
 
     def test_batch_action_rejected_outside_batch_mode(self, monkeypatch):
         self._expect_argparse_error(

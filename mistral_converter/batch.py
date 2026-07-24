@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -21,6 +22,12 @@ logger = utils.logger
 # result downloads from exhausting local memory or disk space.
 _MAX_BATCH_UPLOAD_TOTAL_BYTES = 1024 * 1024 * 1024
 _MAX_BATCH_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+
+
+def _is_valid_job_id(job_id: Any) -> bool:
+    """Return whether *job_id* is safe to send to the API or use in a filename."""
+    return isinstance(job_id, str) and bool(_JOB_ID_RE.fullmatch(job_id))
 
 
 def _prepare_batch_entries(
@@ -80,28 +87,31 @@ def _prepare_batch_entries(
     return entries, uploaded_file_ids, None
 
 
-def _validate_batch_file_admission(file_paths: List[Path]) -> Optional[str]:
-    """Reject an unsafe batch before any Mistral upload is attempted."""
+def _validate_batch_file_admission(file_paths: List[Path]) -> Tuple[Optional[str], int]:
+    """Reject an unsafe batch before any Mistral upload and estimate its pages."""
     if config.MAX_PAGES_PER_SESSION <= 0:
-        return "MAX_PAGES_PER_SESSION must be a positive integer"
-    if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
-        return f"Batch contains {len(file_paths)} files; maximum allowed is {config.MAX_BATCH_FILES}"
+        return "MAX_PAGES_PER_SESSION must be a positive integer", 0
+    if config.MAX_BATCH_FILES <= 0:
+        return "MAX_BATCH_FILES must be a positive integer", 0
+    if len(file_paths) > config.MAX_BATCH_FILES:
+        return f"Batch contains {len(file_paths)} files; maximum allowed is {config.MAX_BATCH_FILES}", 0
 
     estimated_pages = 0
     aggregate_bytes = 0
     for file_path in file_paths:
         valid, error = utils.validate_file(file_path, mode="batch_ocr")
         if not valid:
-            return error or f"Invalid batch file: {file_path.name}"
+            return error or f"Invalid batch file: {file_path.name}", 0
 
         try:
             aggregate_bytes += file_path.stat().st_size
         except OSError as e:
-            return f"Cannot read batch file {file_path.name}: {e}"
+            return f"Cannot read batch file {file_path.name}: {e}", 0
         if aggregate_bytes > _MAX_BATCH_UPLOAD_TOTAL_BYTES:
             return (
                 f"Batch input size ({aggregate_bytes} bytes) exceeds aggregate limit "
-                f"({_MAX_BATCH_UPLOAD_TOTAL_BYTES} bytes)"
+                f"({_MAX_BATCH_UPLOAD_TOTAL_BYTES} bytes)",
+                0,
             )
 
         # Resolve through the package facade so callers and tests that patch the
@@ -110,13 +120,14 @@ def _validate_batch_file_admission(file_paths: List[Path]) -> Optional[str]:
         if estimated_pages > config.MAX_PAGES_PER_SESSION:
             return (
                 f"Batch estimated page count ({estimated_pages}) exceeds session limit "
-                f"({config.MAX_PAGES_PER_SESSION})"
+                f"({config.MAX_PAGES_PER_SESSION})",
+                0,
             )
 
-    return None
+    return None, estimated_pages
 
 
-def create_batch_ocr_file(
+def create_batch_ocr_file(  # noqa: C901
     file_paths: List[Path],
     output_file: Path,
     model: Optional[str] = None,
@@ -146,25 +157,35 @@ def create_batch_ocr_file(
     Documentation:
         https://docs.mistral.ai/capabilities/batch/
     """
-    admission_error = _validate_batch_file_admission(file_paths)
+    admission_error, estimated_pages = _validate_batch_file_admission(file_paths)
     if admission_error:
         return False, None, admission_error
 
-    client = attr("get_mistral_client")()
-    if client is None:
-        return False, None, "Mistral client not available"
+    reserved_pages = 0
+    if estimated_pages:
+        if not attr("_reserve_session_pages")(estimated_pages):
+            return False, None, "Batch estimated page count exceeds remaining session limit"
+        reserved_pages = estimated_pages
 
-    if model is None:
-        model = config.get_ocr_model()
-
-    resolved_include_images = config.MISTRAL_INCLUDE_IMAGES if include_image_base64 is None else include_image_base64
-
-    batch_signed_url_expiry = max(
-        config.MISTRAL_SIGNED_URL_EXPIRY,
-        config.MISTRAL_BATCH_TIMEOUT_HOURS + 1,
-    )
-
+    client: Optional[Any] = None
+    uploaded_file_ids: List[str] = []
+    output_written = False
     try:
+        client = attr("get_mistral_client")()
+        if client is None:
+            return False, None, "Mistral client not available"
+
+        if model is None:
+            model = config.get_ocr_model()
+
+        resolved_include_images = (
+            config.MISTRAL_INCLUDE_IMAGES if include_image_base64 is None else include_image_base64
+        )
+        batch_signed_url_expiry = max(
+            config.MISTRAL_SIGNED_URL_EXPIRY,
+            config.MISTRAL_BATCH_TIMEOUT_HOURS + 1,
+        )
+
         logger.info("Creating batch OCR file for %s documents...", len(file_paths))
 
         entries, uploaded_file_ids, prep_error = _prepare_batch_entries(
@@ -182,17 +203,40 @@ def create_batch_ocr_file(
         # or the output path if these URLs must stay secret on disk.
         content = "".join(json.dumps(entry) + "\n" for entry in entries)
         utils.atomic_write_text(output_file, content)
+        output_written = True
 
         if sys.platform != "win32":
             os.chmod(output_file, 0o600)
 
+        # A submitted batch cannot provide an actual page count yet; commit the
+        # conservative admission estimate once its JSONL is durably created.
+        if not attr("_commit_session_pages")(reserved_pages, reserved_pages):
+            raise RuntimeError("Batch page estimate could not be committed to the session budget")
+        reserved_pages = 0
+
+        omitted = len(file_paths) - len(entries)
+        if omitted:
+            warning = (
+                f"Batch file contains {len(entries)} of {len(file_paths)} requested files; {omitted} upload(s) failed"
+            )
+            logger.warning(warning)
         logger.info("Created batch file with %s entries: %s", len(entries), output_file)
         return True, output_file, None
 
     except Exception as e:
-        error_msg = f"Error creating batch OCR file: {e}"
+        if uploaded_file_ids and client is not None:
+            attr("_delete_ocr_file_ids")(client, uploaded_file_ids)
+        if output_written:
+            try:
+                output_file.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                logger.warning("Could not remove failed batch JSONL %s: %s", output_file, cleanup_error)
+        error_msg = utils.redact_sensitive_url_data(f"Error creating batch OCR file: {e}")
         logger.exception("Unexpected error creating batch OCR file")
         return False, None, error_msg
+    finally:
+        if reserved_pages:
+            attr("_release_session_pages_reservation")(reserved_pages)
 
 
 def submit_batch_ocr_job(  # noqa: C901
@@ -284,17 +328,20 @@ def submit_batch_ocr_job(  # noqa: C901
         logger.info("Batch job created: %s", created_job.id)
 
         if config.ENABLE_BATCH_METADATA:
-            try:
-                meta_path = config.METADATA_DIR / f"batch_job_{created_job.id}.json"
-                meta_payload = {
-                    "job_id": created_job.id,
-                    "model": model,
-                    "batch_file": batch_file_path.name,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-                utils.atomic_write_text(meta_path, json.dumps(meta_payload, indent=2))
-            except OSError as meta_err:
-                logger.warning("Could not write batch job metadata: %s", meta_err)
+            if not _is_valid_job_id(created_job.id):
+                logger.warning("Skipping metadata for batch job with invalid ID")
+            else:
+                try:
+                    meta_path = config.METADATA_DIR / f"batch_job_{created_job.id}.json"
+                    meta_payload = {
+                        "job_id": created_job.id,
+                        "model": model,
+                        "batch_file": batch_file_path.name,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    utils.atomic_write_text(meta_path, json.dumps(meta_payload, indent=2))
+                except OSError as meta_err:
+                    logger.warning("Could not write batch job metadata: %s", meta_err)
 
         # Clean up the local JSONL file (contains signed URLs)
         try:
@@ -324,7 +371,7 @@ def submit_batch_ocr_job(  # noqa: C901
             batch_file_path.unlink(missing_ok=True)
         except OSError:
             pass
-        error_msg = f"Error submitting batch OCR job: {e}"
+        error_msg = utils.redact_sensitive_url_data(f"Error submitting batch OCR job: {e}")
         logger.error(error_msg)
         return False, None, error_msg
 
@@ -348,6 +395,9 @@ def get_batch_job_status(
         - failed_requests: Number of failed requests
         - output_file: Output file ID (when complete)
     """
+    if not _is_valid_job_id(job_id):
+        return False, None, "Invalid batch job ID format"
+
     client = attr("get_mistral_client")()
     if client is None:
         return False, None, "Mistral client not available"
@@ -383,7 +433,7 @@ def get_batch_job_status(
         return True, status, None
 
     except Exception as e:
-        error_msg = f"Error getting batch job status: {e}"
+        error_msg = utils.redact_sensitive_url_data(f"Error getting batch job status: {e}")
         http_types = _http_client_exceptions()
         if http_types and isinstance(e, http_types):
             logger.error(error_msg)
@@ -406,6 +456,9 @@ def download_batch_results(  # noqa: C901
     Returns:
         Tuple of (success, results_file_path, error_message)
     """
+    if not _is_valid_job_id(job_id):
+        return False, None, "Invalid batch job ID format"
+
     client = attr("get_mistral_client")()
     if client is None:
         return False, None, "Mistral client not available"
@@ -499,7 +552,7 @@ def download_batch_results(  # noqa: C901
         return True, output_path, None
 
     except Exception as e:
-        error_msg = f"Error downloading batch results: {e}"
+        error_msg = utils.redact_sensitive_url_data(f"Error downloading batch results: {e}")
         http_types = _http_client_exceptions()
         if http_types and isinstance(e, http_types):
             logger.error(error_msg)
@@ -566,7 +619,7 @@ def list_batch_jobs(
         return True, jobs_list, None
 
     except Exception as e:
-        error_msg = f"Error listing batch jobs: {e}"
+        error_msg = utils.redact_sensitive_url_data(f"Error listing batch jobs: {e}")
         http_types = _http_client_exceptions()
         if http_types and isinstance(e, http_types):
             logger.error(error_msg)

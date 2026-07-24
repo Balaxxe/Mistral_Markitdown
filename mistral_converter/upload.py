@@ -103,7 +103,12 @@ def _parse_registry_created_at(value: Any) -> Optional[datetime]:
     return None
 
 
-def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> int:
+def cleanup_uploaded_files(
+    client: Mistral,
+    days_old: Optional[int] = None,
+    *,
+    raise_on_error: bool = False,
+) -> int:
     """
     Clean up old files uploaded to Mistral Files API.
 
@@ -115,6 +120,8 @@ def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> i
     Args:
         client: Mistral client instance
         days_old: Delete files older than N days (default: from config)
+        raise_on_error: Raise after any listing/deletion/registry failure instead
+            of preserving the historical best-effort behavior.
 
     Returns:
         Number of files deleted
@@ -126,18 +133,34 @@ def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> i
         scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
 
         if scope == "registry":
-            deleted = _cleanup_registry_scoped(client, cutoff_date)
+            deleted = _cleanup_registry_scoped(client, cutoff_date, raise_on_error=raise_on_error)
         elif scope == "all":
             deleted_ids: List[str] = []
-            deleted = _cleanup_files_by_purpose(client, "ocr", cutoff_date, deleted_ids)
-            deleted += _cleanup_files_by_purpose(client, "batch", cutoff_date, deleted_ids)
-            for fid in deleted_ids:
-                _unregister_uploaded_file(fid)
+            try:
+                deleted = _cleanup_files_by_purpose(
+                    client,
+                    "ocr",
+                    cutoff_date,
+                    deleted_ids,
+                    raise_on_error=raise_on_error,
+                )
+                deleted += _cleanup_files_by_purpose(
+                    client,
+                    "batch",
+                    cutoff_date,
+                    deleted_ids,
+                    raise_on_error=raise_on_error,
+                )
+            finally:
+                # Do not leave successfully-deleted IDs registered just
+                # because a later item or purpose failed.
+                for fid in deleted_ids:
+                    _unregister_uploaded_file(fid)
         else:
-            logger.warning(
-                "Refusing upload cleanup for invalid CLEANUP_UPLOAD_SCOPE=%r; expected 'registry' or 'all'",
-                scope,
-            )
+            message = f"Invalid CLEANUP_UPLOAD_SCOPE={scope!r}; expected 'registry' or 'all'"
+            logger.warning("Refusing upload cleanup: %s", message)
+            if raise_on_error:
+                raise ValueError(message)
             return 0
 
         if deleted > 0:
@@ -152,12 +175,20 @@ def cleanup_uploaded_files(client: Mistral, days_old: Optional[int] = None) -> i
 
     except Exception as e:
         logger.warning("Error cleaning up uploaded files: %s", e)
+        if raise_on_error:
+            raise
         return 0
 
 
-def _cleanup_registry_scoped(client: Mistral, cutoff_date: datetime) -> int:
+def _cleanup_registry_scoped(
+    client: Mistral,
+    cutoff_date: datetime,
+    *,
+    raise_on_error: bool = False,
+) -> int:
     """Delete only registry-tracked uploads older than *cutoff_date*."""
     deleted = 0
+    failures: List[Exception] = []
     with _UPLOAD_REGISTRY_LOCK:
         entries = _load_upload_registry()
         remaining: List[Dict[str, Any]] = []
@@ -182,7 +213,12 @@ def _cleanup_registry_scoped(client: Mistral, cutoff_date: datetime) -> int:
             except Exception as e:
                 logger.debug("Error deleting registry file %s: %s", file_id, e)
                 remaining.append(entry)
-        _save_upload_registry(remaining)
+                failures.append(e)
+        registry_saved = _save_upload_registry(remaining)
+    if raise_on_error and not registry_saved:
+        raise OSError("Could not persist the upload registry after cleanup")
+    if raise_on_error and failures:
+        raise RuntimeError(f"Failed to delete {len(failures)} registry-tracked upload(s)") from failures[0]
     return deleted
 
 
@@ -191,6 +227,8 @@ def _cleanup_files_by_purpose(
     purpose: Literal["ocr", "batch"],
     cutoff_date: datetime,
     deleted_ids: List[str],
+    *,
+    raise_on_error: bool = False,
 ) -> int:
     """Delete files older than cutoff_date for a given purpose (account-wide)."""
     deleted = 0
@@ -209,6 +247,8 @@ def _cleanup_files_by_purpose(
                 page,
                 e,
             )
+            if raise_on_error:
+                raise RuntimeError(f"Could not list {purpose} uploads for cleanup") from e
             break
 
         if not files_list:
@@ -240,6 +280,8 @@ def _cleanup_files_by_purpose(
                     )
             except Exception as e:
                 logger.debug("Error processing %s file %s: %s", purpose, file.id, e)
+                if raise_on_error:
+                    raise RuntimeError(f"Could not delete {purpose} upload {getattr(file, 'id', '')}") from e
                 continue
 
         total = getattr(files_response, "total", None)

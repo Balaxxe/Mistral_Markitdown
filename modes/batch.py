@@ -46,7 +46,9 @@ def _batch_submit(file_paths: List[Path], *, non_interactive: bool) -> Tuple[boo
         if not submit_paths:
             return False, "No valid files to process for batch OCR."
 
-    if config.MAX_BATCH_FILES > 0 and len(submit_paths) > config.MAX_BATCH_FILES:
+    if config.MAX_BATCH_FILES <= 0:
+        return False, "MAX_BATCH_FILES must be a positive integer."
+    if len(submit_paths) > config.MAX_BATCH_FILES:
         return False, (
             f"Batch size ({len(submit_paths)}) exceeds MAX_BATCH_FILES ({config.MAX_BATCH_FILES}). "
             "Increase the limit or split into smaller batches."
@@ -149,7 +151,6 @@ def mode_batch_ocr(
     non_interactive: bool = False,
 ) -> Tuple[bool, str]:
     """Submit files for batch OCR processing at reduced cost."""
-    mistral_converter.reset_session_page_counter()
     logger.info("BATCH OCR MODE: %d file(s) in initial selection", len(file_paths))
 
     if not config.MISTRAL_API_KEY:

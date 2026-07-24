@@ -104,7 +104,10 @@ def _commit_session_pages(reserved: int, actual: int) -> bool:
                         new_total,
                         page_limit,
                     )
-            return False
+            # Reaching the cap exactly is an allowed final operation.  An
+            # actual overshoot is not: callers must not publish work that has
+            # exceeded the documented session cost guardrail.
+            return new_total == page_limit
         return True
 
 

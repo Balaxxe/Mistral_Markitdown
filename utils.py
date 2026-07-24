@@ -96,6 +96,7 @@ __all__ = [
     "generate_yaml_frontmatter",
     "strip_yaml_frontmatter",
     "sanitize_for_terminal",
+    "redact_sensitive_url_data",
     "ui_print",
     "ConversionResult",
     "to_conversion_result",
@@ -153,6 +154,23 @@ _ANSI_ESCAPE_RE = re.compile(
     r")|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]"  # remaining C0/C1 controls (keep \t \n \r)
 )
 
+# Keep harmless URLs useful in diagnostics, while removing credentials that
+# commonly occur in presigned object-store URLs and query-string fragments.
+_SENSITIVE_URL_QUERY_VALUE_RE = re.compile(
+    r"(?P<key>(?:[?&]|\b)(?:x-amz-[a-z0-9_-]+|x-goog-[a-z0-9_-]+|signature|sig|token)=)"
+    r"(?P<value>[^&#\s,;)'\]\"}]+)",
+    re.IGNORECASE,
+)
+
+
+def redact_sensitive_url_data(text: str) -> str:
+    """Redact sensitive URL query values without hiding harmless URLs.
+
+    This intentionally also accepts standalone ``key=value`` fragments, as
+    SDK exception messages often omit the leading URL or query delimiter.
+    """
+    return _SENSITIVE_URL_QUERY_VALUE_RE.sub(r"\g<key><redacted>", text)
+
 
 def sanitize_for_terminal(text: str) -> str:
     """Strip ANSI escape sequences and non-printable C0/C1 control characters.
@@ -161,7 +179,7 @@ def sanitize_for_terminal(text: str) -> str:
     untrusted text (e.g. OCR output, LLM answers) to prevent terminal
     manipulation attacks.
     """
-    return _ANSI_ESCAPE_RE.sub("", text)
+    return _ANSI_ESCAPE_RE.sub("", redact_sensitive_url_data(text))
 
 
 class _TerminalSanitizingFormatter(logging.Formatter):

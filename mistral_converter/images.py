@@ -10,16 +10,23 @@ import config
 import utils
 
 from .facade import attr
-from .resource_limits import OCRResponseLimitError
+from .resource_limits import (
+    MAX_EXTRACTED_IMAGE_DATA_URI_HEADER_CHARS,
+    MAX_EXTRACTED_IMAGE_DECODED_BYTES,
+    MAX_EXTRACTED_IMAGE_ENCODED_BYTES,
+    MAX_EXTRACTED_IMAGES,
+    MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES,
+    OCRResponseLimitError,
+)
 
 logger = utils.logger
 
 # OCR responses are untrusted. Keep these local ceilings private so public
 # configuration remains compatible while extraction cannot exhaust a worker.
-_MAX_EXTRACTED_IMAGES = 100
-_MAX_EXTRACTED_IMAGE_ENCODED_BYTES = 10 * 1024 * 1024
-_MAX_EXTRACTED_IMAGE_DECODED_BYTES = 7 * 1024 * 1024
-_MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES = 50 * 1024 * 1024
+_MAX_EXTRACTED_IMAGES = MAX_EXTRACTED_IMAGES
+_MAX_EXTRACTED_IMAGE_ENCODED_BYTES = MAX_EXTRACTED_IMAGE_ENCODED_BYTES
+_MAX_EXTRACTED_IMAGE_DECODED_BYTES = MAX_EXTRACTED_IMAGE_DECODED_BYTES
+_MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES = MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES
 
 
 def _new_image_temp_path(image_path: Path, operation: str) -> Path:
@@ -171,27 +178,42 @@ def _prepare_extracted_images(ocr_result: Dict[str, Any]) -> List[tuple[Any, byt
     image_limit = (
         min(configured_image_limit, _MAX_EXTRACTED_IMAGES) if configured_image_limit > 0 else _MAX_EXTRACTED_IMAGES
     )
+    image_entries = 0
 
     for page in ocr_result.get("pages", []):
         page_num = page.get("page_number", 1)
-        for image in page.get("images", []):
+        images = page.get("images", [])
+        if not isinstance(images, (list, tuple)):
+            raise OCRResponseLimitError("OCR page images must be a list")
+        if len(images) > image_limit - image_entries:
+            raise OCRResponseLimitError(f"OCR image count exceeds the local limit ({image_limit})")
+        image_entries += len(images)
+        for image in images:
+            if not isinstance(image, dict):
+                raise OCRResponseLimitError("OCR image entries must be objects")
             image_base64 = image.get("base64")
             if not image_base64:
                 continue
-            if len(pending) >= image_limit:
-                raise OCRResponseLimitError(f"OCR image count exceeds the local limit ({image_limit})")
             if not isinstance(image_base64, str):
                 raise OCRResponseLimitError("OCR image base64 data must be text")
             if image_base64.startswith("data:"):
-                if "," not in image_base64:
-                    raise OCRResponseLimitError("OCR image data URI is malformed")
-                image_base64 = image_base64.split(",", 1)[1]
-            try:
-                encoded_bytes = len(image_base64.encode("ascii"))
-            except UnicodeEncodeError as exc:
-                raise OCRResponseLimitError("OCR image base64 data contains non-ASCII text") from exc
+                if len(image_base64) > (_MAX_EXTRACTED_IMAGE_ENCODED_BYTES + MAX_EXTRACTED_IMAGE_DATA_URI_HEADER_CHARS):
+                    raise OCRResponseLimitError("OCR image exceeds the local encoded-byte limit")
+                comma = image_base64.find(",", 0, MAX_EXTRACTED_IMAGE_DATA_URI_HEADER_CHARS + 1)
+                if comma < 0:
+                    raise OCRResponseLimitError("OCR image data URI is malformed or has an oversized header")
+                # Check the encoded payload length before allocating a
+                # substring.  The parser performs this admission earlier as
+                # well; retain the defence here for externally supplied
+                # result dictionaries.
+                if len(image_base64) - comma - 1 > _MAX_EXTRACTED_IMAGE_ENCODED_BYTES:
+                    raise OCRResponseLimitError("OCR image exceeds the local encoded-byte limit")
+                image_base64 = image_base64[comma + 1 :]
+            encoded_bytes = len(image_base64)
             if encoded_bytes > _MAX_EXTRACTED_IMAGE_ENCODED_BYTES:
                 raise OCRResponseLimitError("OCR image exceeds the local encoded-byte limit")
+            if not image_base64.isascii():
+                raise OCRResponseLimitError("OCR image base64 data contains non-ASCII text")
 
             # Rounding up is safe before strict base64 decoding and avoids an
             # allocation for an obviously oversized payload.

@@ -209,6 +209,15 @@ class TestSafeParsingHelpers:
 
         assert config.MAX_PAGES_PER_SESSION == 1000
 
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_batch_file_limit_requires_a_positive_value(self, monkeypatch, restore_runtime_config, value):
+        monkeypatch.setenv("MAX_BATCH_FILES", value)
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.MAX_BATCH_FILES == 100
+
     def test_safe_float_below_min(self, monkeypatch):
         monkeypatch.setenv("TEST_FLOAT_VAR", "-1.5")
         result = config._safe_float("TEST_FLOAT_VAR", 0.5, min_val=0.0)
@@ -400,7 +409,7 @@ class TestReloadSettings:
         assert config._initialized is False
         assert config._init_issues == []
 
-    def test_reload_leaves_path_constants_unchanged_and_restores_compatibility_default(
+    def test_reload_leaves_path_constants_unchanged_and_restores_secure_path_default(
         self, monkeypatch, restore_runtime_config
     ):
         path_names = (
@@ -419,8 +428,18 @@ class TestReloadSettings:
 
         config.reload_settings()
 
-        assert config.STRICT_INPUT_PATH_RESOLUTION is False
+        assert config.STRICT_INPUT_PATH_RESOLUTION is True
         assert all(getattr(config, name) is path for name, path in original_paths.items())
+
+    def test_security_sensitive_boolean_defaults(self, monkeypatch, restore_runtime_config):
+        monkeypatch.delenv("MISTRAL_BATCH_STRICT", raising=False)
+        monkeypatch.delenv("MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", raising=False)
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.MISTRAL_BATCH_STRICT is True
+        assert config.MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER is False
 
 
 class TestValidateConfigurationBranches:

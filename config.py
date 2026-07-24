@@ -214,10 +214,10 @@ BASE_DIR = Path(__file__).parent.resolve()
 INPUT_DIR = BASE_DIR / "input"
 
 # When true, ``utils.validate_file`` rejects paths that resolve outside ``INPUT_DIR``
-# (e.g. symlinks pointing outside the inbox). Default false preserves support for
-# programmatic callers that intentionally pass arbitrary paths; opt in for confinement.
+# (e.g. symlinks pointing outside the inbox). Confinement is the secure default;
+# programmatic callers that intentionally pass arbitrary paths can explicitly opt out.
 STRICT_INPUT_PATH_RESOLUTION = _runtime_setting(
-    "STRICT_INPUT_PATH_RESOLUTION", lambda: _safe_bool("STRICT_INPUT_PATH_RESOLUTION", False)
+    "STRICT_INPUT_PATH_RESOLUTION", lambda: _safe_bool("STRICT_INPUT_PATH_RESOLUTION", True)
 )
 
 OUTPUT_MD_DIR = BASE_DIR / "output_md"
@@ -571,7 +571,7 @@ VERBOSE_PROGRESS = _runtime_setting("VERBOSE_PROGRESS", lambda: _safe_bool("VERB
 MAX_CONCURRENT_FILES = _runtime_setting("MAX_CONCURRENT_FILES", lambda: _safe_int("MAX_CONCURRENT_FILES", 5, min_val=1))
 
 # API cost guardrails
-MAX_BATCH_FILES = _runtime_setting("MAX_BATCH_FILES", lambda: _safe_int("MAX_BATCH_FILES", 100))
+MAX_BATCH_FILES = _runtime_setting("MAX_BATCH_FILES", lambda: _safe_int("MAX_BATCH_FILES", 100, min_val=1))
 # Shared, finite OCR/PDF work budget. Zero or negative values are invalid and
 # fall back to the secure default rather than disabling the cap.
 MAX_PAGES_PER_SESSION = _runtime_setting(
@@ -595,6 +595,10 @@ MISTRAL_QNA_MAX_FILE_SIZE_MB = _runtime_setting(
 MISTRAL_DOCUMENT_URL_STRICT_DNS = _runtime_setting(
     "MISTRAL_DOCUMENT_URL_STRICT_DNS", lambda: _safe_bool("MISTRAL_DOCUMENT_URL_STRICT_DNS", True)
 )
+MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER = _runtime_setting(
+    "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER",
+    lambda: _safe_bool("MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", False),
+)
 MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS = _runtime_setting(
     "MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS",
     lambda: _safe_int("MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS", 5, min_val=1),
@@ -606,8 +610,9 @@ MISTRAL_BATCH_TIMEOUT_HOURS = _runtime_setting(
 )
 MISTRAL_BATCH_DEFAULT_TIMEOUT_HOURS = 24  # Default batch timeout used when comparing custom values
 
-# Fail batch file creation if any input upload fails (default: allow partial batches)
-MISTRAL_BATCH_STRICT = _runtime_setting("MISTRAL_BATCH_STRICT", lambda: _safe_bool("MISTRAL_BATCH_STRICT", False))
+# Fail batch file creation if any input upload fails. Partial batches require an
+# explicit compatibility opt-out because silent document omission is unsafe.
+MISTRAL_BATCH_STRICT = _runtime_setting("MISTRAL_BATCH_STRICT", lambda: _safe_bool("MISTRAL_BATCH_STRICT", True))
 
 # HTTP client timeout for Mistral SDK requests (milliseconds).
 # Separate from RETRY_MAX_ELAPSED_TIME_MS, which only bounds the SDK retry
@@ -948,6 +953,13 @@ def validate_configuration() -> List[str]:
         issues.append(
             "SECURITY: STRICT_INPUT_PATH_RESOLUTION is false. "
             "validate_file will accept paths outside INPUT_DIR (including symlink escapes)."
+        )
+
+    if MISTRAL_SERVER_URL and MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER:
+        issues.append(
+            "SECURITY: MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER is true. "
+            "The custom server performs document URL fetches outside this process, so local "
+            "DNS checks cannot enforce redirect, rebinding, or server-egress policy."
         )
 
     if CLEANUP_UPLOAD_SCOPE == "all" and not CLEANUP_UPLOAD_ALL_CONFIRM:
