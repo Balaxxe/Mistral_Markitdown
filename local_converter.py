@@ -16,6 +16,7 @@ import re
 import sys
 import tempfile
 import threading
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -80,6 +81,14 @@ _markitdown_generation = 0
 _markitdown_lock = threading.Lock()
 
 _UNBUDGETED_ARCHIVE_SUFFIXES = {".zip", ".epub"}
+_OOXML_SUFFIXES = {".docx", ".pptx", ".xlsx"}
+
+# OOXML is a ZIP container. Keep these independent, conservative limits so a
+# small compressed upload cannot hand an unbounded archive to MarkItDown.
+_OOXML_MAX_MEMBERS = 2_000
+_OOXML_MAX_MEMBER_BYTES = 64 * 1024 * 1024
+_OOXML_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+_OOXML_MAX_COMPRESSION_RATIO = 100
 
 
 def _max_markitdown_bytes() -> int:
@@ -93,6 +102,51 @@ def _archive_rejection(file_name: str) -> Optional[str]:
             "ZIP/EPUB conversion is disabled until aggregate decompressed-byte, "
             "member-count, and nesting-depth limits are enforced"
         )
+    return None
+
+
+def _ooxml_rejection(archive: Any, filename: str) -> Optional[str]:
+    """Validate an OOXML ZIP central directory before passing it to MarkItDown."""
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _OOXML_SUFFIXES:
+        return None
+
+    required_prefix = {".docx": "word/", ".pptx": "ppt/", ".xlsx": "xl/"}[suffix]
+    try:
+        with zipfile.ZipFile(archive) as package:
+            members = package.infolist()
+            names = {member.filename for member in members}
+            if "[Content_Types].xml" not in names or not any(name.startswith(required_prefix) for name in names):
+                return "Malformed OOXML package"
+            if len(members) > _OOXML_MAX_MEMBERS:
+                return "OOXML package has too many members"
+
+            total_size = 0
+            for member in members:
+                member_name = member.filename.replace("\\", "/")
+                if member_name.startswith("/") or ".." in Path(member_name).parts:
+                    return "Malformed OOXML package member path"
+                if member.flag_bits & 0x1:
+                    return "Encrypted OOXML packages are not supported"
+                if member.file_size > _OOXML_MAX_MEMBER_BYTES:
+                    return "OOXML package member exceeds the uncompressed-byte limit"
+                total_size += member.file_size
+                if total_size > _OOXML_MAX_TOTAL_BYTES:
+                    return "OOXML package exceeds the aggregate uncompressed-byte limit"
+                if member.compress_size == 0:
+                    if member.file_size:
+                        return "OOXML package member has an invalid compression ratio"
+                elif member.file_size / member.compress_size > _OOXML_MAX_COMPRESSION_RATIO:
+                    return "OOXML package member exceeds the compression-ratio limit"
+                if member_name.lower().endswith((".zip", ".epub")):
+                    return "Nested archives are not supported in OOXML packages"
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as e:
+        return f"Malformed OOXML package: {e}"
+    finally:
+        try:
+            archive.seek(0)
+        except (AttributeError, OSError):
+            pass
     return None
 
 
@@ -228,6 +282,10 @@ def convert_with_markitdown(
             (f"File too large ({file_size_mb:.1f} MB). " f"Maximum allowed: {config.MARKITDOWN_MAX_FILE_SIZE_MB} MB"),
         )
 
+    ooxml_error = _ooxml_rejection(file_path, file_path.name)
+    if ooxml_error:
+        return False, None, ooxml_error
+
     md = get_markitdown_instance()
     if md is None:
         return False, None, "MarkItDown not available"
@@ -326,6 +384,10 @@ def convert_stream_with_markitdown(
         return False, None, str(e)
 
     try:
+        ooxml_error = _ooxml_rejection(bounded_stream, filename)
+        if ooxml_error:
+            return False, None, ooxml_error
+
         md = get_markitdown_instance()
         if md is None:
             return False, None, "MarkItDown not available"
@@ -813,10 +875,12 @@ def save_tables_to_files(pdf_path: Path, tables: List[List[List[str]]]) -> List[
             headers, data_rows = utils.normalize_table_headers(table)
 
             if headers and data_rows:
-                md_content += utils.format_table_to_markdown(data_rows, headers=headers)
+                md_content += utils.format_table_to_markdown(
+                    _neutralize_table_formulas(data_rows), headers=_neutralize_table_formulas([headers])[0]
+                )
             else:
                 # Fallback if normalization fails
-                md_content += utils.format_table_to_markdown(table)
+                md_content += utils.format_table_to_markdown(_neutralize_table_formulas(table))
 
             md_content += "\n\n---\n\n"
 
@@ -861,10 +925,17 @@ def _neutralize_csv_formula(value: Any) -> Any:
     """Prevent spreadsheet applications from evaluating extracted cell text as a formula."""
     if not isinstance(value, str):
         return value
-    stripped = value.lstrip()
-    if stripped and stripped[0] in {"=", "+", "-", "@"}:
+    stripped = value
+    while stripped and (stripped[0].isspace() or stripped[0] == "\ufeff"):
+        stripped = stripped[1:]
+    if stripped and stripped[0] in {"=", "＝", "+", "-", "@"}:
         return "'" + value
     return value
+
+
+def _neutralize_table_formulas(table: List[List[Any]]) -> List[List[Any]]:
+    """Neutralize formula-like cells before rendering any table output."""
+    return [[_neutralize_csv_formula(cell) for cell in row] for row in table]
 
 
 def _pdf_page_count(pdf_path: Path) -> int:
@@ -874,6 +945,20 @@ def _pdf_page_count(pdf_path: Path) -> int:
 
     with pdfplumber.open(pdf_path) as pdf:
         return len(pdf.pages)
+
+
+def _pdf_page_limit_error(page_count: int) -> Optional[str]:
+    """Return the configured PDF render page-policy error, if any."""
+    session_page_limit = int(config.MAX_PAGES_PER_SESSION)
+    render_page_limit = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
+    if session_page_limit <= 0:
+        return "PDF page limit must be a positive integer"
+    if page_count <= 0:
+        return "PDF page count is empty or unavailable"
+    page_limit = min(session_page_limit, render_page_limit) if render_page_limit > 0 else session_page_limit
+    if page_count > page_limit:
+        return f"PDF has too many pages ({page_count}). Maximum allowed: {page_limit}"
+    return None
 
 
 def _validate_pdf_render_input(pdf_path: Path) -> Optional[str]:
@@ -890,16 +975,38 @@ def _validate_pdf_render_input(pdf_path: Path) -> Optional[str]:
         page_count = _pdf_page_count(pdf_path)
     except Exception as e:
         return f"Cannot determine PDF page count: {e}"
-    session_page_limit = int(config.MAX_PAGES_PER_SESSION)
-    render_page_limit = int(getattr(config, "PDF_IMAGE_MAX_PAGES", 0) or 0)
-    if session_page_limit <= 0:
-        return "PDF page limit must be a positive integer"
-    if page_count <= 0:
-        return "PDF page count is empty or unavailable"
-    page_limit = min(session_page_limit, render_page_limit) if render_page_limit > 0 else session_page_limit
-    if page_count > page_limit:
-        return f"PDF has too many pages ({page_count}). Maximum allowed: {page_limit}"
-    return None
+    return _pdf_page_limit_error(page_count)
+
+
+def _admitted_pdf_render_pages(pdf_path: Path) -> Tuple[Optional[int], Optional[str]]:
+    """Validate a PDF and return the exact page count admitted for rendering."""
+    validation_error = _validate_pdf_render_input(pdf_path)
+    if validation_error:
+        return None, validation_error
+    try:
+        page_count = _pdf_page_count(pdf_path)
+    except Exception as e:
+        # A second count closes the validation-to-render window without ever
+        # invoking Poppler on a document whose page count is no longer known.
+        return None, f"Cannot determine PDF page count: {e}"
+    # Re-apply the policy to the second observation: a file swap between the
+    # preflight and this count must not turn the Poppler bound into a larger,
+    # newly-admitted value.
+    page_error = _pdf_page_limit_error(page_count)
+    if page_error:
+        return None, page_error
+    return page_count, None
+
+
+def _cleanup_render_artifacts(paths: List[Any]) -> None:
+    """Remove only files created by this render attempt, never sibling output."""
+    for path_item in paths:
+        try:
+            path = Path(str(path_item))
+            if path.is_file():
+                path.unlink()
+        except OSError as e:
+            logger.warning("Could not remove incomplete PDF render artifact %s: %s", path_item, e)
 
 
 # ============================================================================
@@ -930,9 +1037,11 @@ def convert_pdf_to_images(
         return False, [], "pdf2image not installed"
 
     try:
-        validation_error = _validate_pdf_render_input(pdf_path)
+        admitted_pages, validation_error = _admitted_pdf_render_pages(pdf_path)
         if validation_error:
             return False, [], validation_error
+        if admitted_pages is None:
+            return False, [], "Cannot determine PDF page count"
 
         # Set output directory (unique stem when same basename in different dirs)
         if output_dir is None:
@@ -967,10 +1076,19 @@ def convert_pdf_to_images(
             "use_pdftocairo": config.PDF_IMAGE_USE_PDFTOCAIRO,
             "output_file": "page",
             "paths_only": True,
+            "first_page": 1,
+            "last_page": admitted_pages,
         }
 
         # Convert PDF to images directly on disk
         temp_paths = convert_from_path(**convert_params)
+        if len(temp_paths) != admitted_pages:
+            _cleanup_render_artifacts(temp_paths)
+            return (
+                False,
+                [],
+                f"PDF render page count changed or disagreed with validation ({len(temp_paths)} rendered; {admitted_pages} admitted)",
+            )
 
         # Rename output files to preserve expected page_001.ext structure
         image_paths = []

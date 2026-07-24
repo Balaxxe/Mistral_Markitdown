@@ -1067,6 +1067,24 @@ class TestSanitizeForTerminal:
         result = utils.sanitize_for_terminal("")
         assert result == ""
 
+    def test_redacts_sensitive_url_query_values(self):
+        value = "https://bucket.example/file?X-Amz-Signature=secret&token=also-secret&safe=value"
+        result = utils.redact_sensitive_url_data(value)
+        assert "secret" not in result
+        assert "X-Amz-Signature=<redacted>" in result
+        assert "token=<redacted>" in result
+        assert "safe=value" in result
+
+    def test_redacts_standalone_sensitive_query_fragments(self):
+        result = utils.sanitize_for_terminal("request failed: sig=secret, Signature=also-secret")
+        assert "secret" not in result
+        assert "sig=<redacted>" in result
+        assert "Signature=<redacted>" in result
+
+    def test_preserves_harmless_url(self):
+        value = "https://example.com/document.pdf?page=3"
+        assert utils.redact_sensitive_url_data(value) == value
+
 
 class TestAtomicWriteBinary:
     """Tests for atomic_write_binary: temp-file + rename for binary content."""

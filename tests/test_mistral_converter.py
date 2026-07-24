@@ -10,6 +10,7 @@ Tests cover:
 """
 
 import importlib
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -331,7 +332,7 @@ class TestCommitSessionPages:
     def test_warns_once_at_exact_limit(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 10)
         mistral_converter.reset_session_page_counter()
-        assert mistral_converter._commit_session_pages(0, 10) is False
+        assert mistral_converter._commit_session_pages(0, 10) is True
         assert mistral_converter._session_pages_processed == 10
         assert mistral_converter._session_pages_warned is True
 
@@ -367,6 +368,29 @@ class TestCommitSessionPages:
         assert "positive" in (error or "").lower()
         estimate.assert_not_called()
         client.ocr.process.assert_not_called()
+
+    def test_ocr_rejects_actual_page_budget_overshoot_before_returning_result(self, monkeypatch, tmp_path):
+        import mistral_converter.ocr as ocr_module
+
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1)
+        mistral_converter.reset_session_page_counter()
+        document = tmp_path / "document.pdf"
+        document.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.ocr.process.return_value = object()
+        monkeypatch.setattr(ocr_module, "_estimate_session_pages_for_ocr", lambda *_args: 1)
+        monkeypatch.setattr(ocr_module, "_prepare_ocr_document", lambda *_args: ({}, "https://signed.example/doc"))
+        monkeypatch.setattr(
+            ocr_module,
+            "_parse_ocr_response",
+            lambda *_args: {"full_text": "two pages", "pages": [{}, {}]},
+        )
+
+        ok, result, error = mistral_converter.process_with_ocr(client, document)
+
+        assert (ok, result) == (False, None)
+        assert "budget exceeded" in (error or "").lower()
+        mistral_converter.reset_session_page_counter()
 
 
 class TestSessionPageReservations:
@@ -429,6 +453,67 @@ class TestSessionPageReservations:
 
         mistral_converter._release_session_pages_reservation(10)
         assert mistral_converter._session_pages_inflight == 0
+
+    def test_ocr_commit_exception_does_not_release_a_later_reservation(self, monkeypatch, tmp_path):
+        """An OCR commit exception cannot make ``finally`` release another worker's credit."""
+        import mistral_converter.ocr as ocr_module
+
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 4)
+        mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
+        mistral_converter.reset_session_page_counter()
+        document = tmp_path / "document.pdf"
+        document.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.ocr.process.return_value = object()
+        real_commit = ocr_module._commit_session_pages
+
+        def commit_then_reserve_and_raise(reserved, actual):
+            assert real_commit(reserved, actual) is True
+            assert mistral_converter._reserve_session_pages(2) is True
+            raise RuntimeError("commit failed after consuming reservation")
+
+        try:
+            with (
+                patch.object(ocr_module, "_estimate_session_pages_for_ocr", return_value=2),
+                patch.object(ocr_module, "_prepare_ocr_document", return_value=({}, "https://signed.example/doc")),
+                patch.object(
+                    ocr_module,
+                    "_parse_ocr_response",
+                    return_value={"full_text": "processed", "pages": [{}, {}]},
+                ),
+                patch.object(ocr_module, "_commit_session_pages", side_effect=commit_then_reserve_and_raise),
+            ):
+                ok, result, error = mistral_converter.process_with_ocr(client, document)
+
+            assert (ok, result) == (False, None)
+            assert "commit failed" in (error or "")
+            assert mistral_converter._session_pages_processed == 2
+            assert mistral_converter._session_pages_inflight == 2
+        finally:
+            mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
+            mistral_converter.reset_session_page_counter()
+
+    def test_concurrent_reservations_cannot_over_admit(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 10)
+        mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
+        mistral_converter.reset_session_page_counter()
+        barrier = threading.Barrier(3)
+        outcomes = []
+
+        def reserve():
+            barrier.wait()
+            outcomes.append(mistral_converter._reserve_session_pages(6))
+
+        workers = [threading.Thread(target=reserve), threading.Thread(target=reserve)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join()
+
+        assert sorted(outcomes) == [False, True]
+        assert mistral_converter._session_pages_inflight == 6
+        mistral_converter._release_session_pages_reservation(6)
 
 
 # ============================================================================
@@ -1096,6 +1181,13 @@ class TestCleanupUploadedFiles:
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=7)
         assert count == 0
+
+    def test_strict_cleanup_surfaces_remote_list_failure(self):
+        mock_client = MagicMock()
+        mock_client.files.list.side_effect = Exception("API error")
+
+        with pytest.raises(RuntimeError, match="Could not list"):
+            mistral_converter.cleanup_uploaded_files(mock_client, days_old=7, raise_on_error=True)
 
 
 # ============================================================================
@@ -2593,6 +2685,23 @@ class TestImproveWeakPages:
                 mistral_converter.improve_weak_pages(mock_client, Path("doc.pdf"), ocr_result, "mistral-ocr-latest")
         kwargs = m_ocr.call_args[1]
         assert kwargs.get("pages") == [2]
+
+    def test_each_weak_page_is_reprocessed_once_with_its_single_page_budget(self, monkeypatch):
+        """Improvement delegates one bounded OCR request per original weak page."""
+        monkeypatch.setattr(config, "OCR_MAX_WEAK_PAGE_WORKERS", 1)
+        ocr_result = {
+            "pages": [
+                {"text": "short", "page_number": 1, "api_page_index": 4},
+                {"text": "tiny", "page_number": 2, "api_page_index": 7},
+            ]
+        }
+        improved = {"pages": [{"text": "improved text " * 20}], "full_text": "improved"}
+        with patch.object(mistral_converter, "upload_file_for_ocr", return_value="https://u"):
+            with patch.object(mistral_converter, "process_with_ocr", return_value=(True, improved, None)) as process:
+                mistral_converter.improve_weak_pages(MagicMock(), Path("doc.pdf"), ocr_result, "model")
+
+        assert process.call_count == 2
+        assert {call.kwargs["pages"][0] for call in process.call_args_list} == {4, 7}
 
     def test_improvement_fails_keeps_original(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_CONCURRENT_FILES", 1)

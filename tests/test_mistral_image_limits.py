@@ -33,6 +33,31 @@ def test_image_count_limit_rejects_before_creating_output(tmp_path, monkeypatch)
     assert not (config.OUTPUT_IMAGES_DIR / "document_ocr").exists()
 
 
+def test_payloadless_image_entries_still_count_toward_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(images, "_MAX_EXTRACTED_IMAGES", 1)
+    result = {"pages": [{"page_number": 1, "images": [{"id": "one"}, {"id": "two"}]}]}
+
+    with pytest.raises(OCRResponseLimitError, match="count"):
+        images.save_extracted_images(result, tmp_path / "document.pdf", fail_on_limit=True)
+
+    assert not (config.OUTPUT_IMAGES_DIR / "document_ocr").exists()
+
+
+def test_encoded_length_is_checked_before_ascii_copy_or_scan(tmp_path, monkeypatch):
+    class ScanDetectingString(str):
+        def isascii(self):
+            raise AssertionError("ASCII scan ran before encoded-length admission")
+
+    monkeypatch.setattr(images, "_MAX_EXTRACTED_IMAGE_ENCODED_BYTES", 4)
+
+    with pytest.raises(OCRResponseLimitError, match="encoded-byte"):
+        images.save_extracted_images(
+            _result(ScanDetectingString("AAAAA")),
+            tmp_path / "document.pdf",
+            fail_on_limit=True,
+        )
+
+
 def test_image_aggregate_limit_rejects_before_creating_output(tmp_path, monkeypatch):
     monkeypatch.setattr(images, "_MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES", 5)
     encoded = base64.b64encode(b"four").decode("ascii")

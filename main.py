@@ -269,10 +269,11 @@ def mode_convert_smart(file_paths: List[Path]) -> Tuple[bool, str]:
 
     Multiple files are processed concurrently.
     """
-    mistral_converter.reset_session_page_counter()
     logger.info("SMART CONVERT MODE: Processing %d file(s)", len(file_paths))
 
-    if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
+    if config.MAX_BATCH_FILES <= 0:
+        return False, "MAX_BATCH_FILES must be a positive integer"
+    if len(file_paths) > config.MAX_BATCH_FILES:
         return False, (
             f"Batch size ({len(file_paths)}) exceeds MAX_BATCH_FILES ({config.MAX_BATCH_FILES}). "
             "Increase the limit or split into smaller batches."
@@ -319,7 +320,9 @@ def mode_markitdown_only(file_paths: List[Path]) -> Tuple[bool, str]:
     """Force all files through MarkItDown (local conversion, no API calls)."""
     logger.info("MARKITDOWN MODE: Processing %d file(s)", len(file_paths))
 
-    if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
+    if config.MAX_BATCH_FILES <= 0:
+        return False, "MAX_BATCH_FILES must be a positive integer"
+    if len(file_paths) > config.MAX_BATCH_FILES:
         return False, (
             f"Batch size ({len(file_paths)}) exceeds MAX_BATCH_FILES ({config.MAX_BATCH_FILES}). "
             "Increase the limit or split into smaller batches."
@@ -383,13 +386,14 @@ def mode_mistral_ocr_only(file_paths: List[Path]) -> Tuple[bool, str]:
     if not config.MISTRAL_API_KEY:
         return False, "Mistral OCR requires MISTRAL_API_KEY to be set"
 
-    if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
+    if config.MAX_BATCH_FILES <= 0:
+        return False, "MAX_BATCH_FILES must be a positive integer"
+    if len(file_paths) > config.MAX_BATCH_FILES:
         return False, (
             f"Batch size ({len(file_paths)}) exceeds MAX_BATCH_FILES ({config.MAX_BATCH_FILES}). "
             "Increase the limit or split into smaller batches."
         )
 
-    mistral_converter.reset_session_page_counter()
     logger.info("MISTRAL OCR MODE: Processing %d file(s)", len(file_paths))
 
     successful, failed = _process_files_concurrently(
@@ -408,19 +412,24 @@ def mode_pdf_to_images(file_paths: List[Path]) -> Tuple[bool, str]:
     """Render each PDF page to PNG images."""
     logger.info("PDF TO IMAGES MODE: Converting %d PDF(s)", len(file_paths))
 
-    if config.MAX_BATCH_FILES > 0 and len(file_paths) > config.MAX_BATCH_FILES:
+    if config.MAX_BATCH_FILES <= 0:
+        return False, "MAX_BATCH_FILES must be a positive integer"
+    if len(file_paths) > config.MAX_BATCH_FILES:
         return False, (
             f"Batch size ({len(file_paths)}) exceeds MAX_BATCH_FILES ({config.MAX_BATCH_FILES}). "
             "Increase the limit or split into smaller batches."
         )
 
     pdf_files: List[Path] = []
+    skipped = 0
     for fp in file_paths:
         if fp.suffix.lower() != ".pdf":
+            skipped += 1
             continue
         too_large, size_err = utils.pdf_exceeds_heavy_work_limit(fp)
         if too_large:
             logger.warning("Skipping %s: %s", fp.name, size_err)
+            skipped += 1
             continue
         pdf_files.append(fp)
 
@@ -442,6 +451,8 @@ def mode_pdf_to_images(file_paths: List[Path]) -> Tuple[bool, str]:
 
     successful, failed = _process_files_concurrently(pdf_files, _convert_one_pdf, "Converting PDFs")
 
+    if skipped:
+        return False, f"Converted {successful} PDFs; skipped {skipped} requested input(s)"
     return failed == 0, f"Converted {successful} PDFs"
 
 
@@ -601,6 +612,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--stdin-filename requires --stdin")
     if args.qna_question and args.mode != "qna":
         parser.error("--qna-question can only be used with --mode qna")
+    if args.qna_question and not args.no_interactive:
+        parser.error("--qna-question requires --no-interactive")
     if args.qna_document_url and args.mode != "qna":
         parser.error("--qna-document-url can only be used with --mode qna")
     if args.qna_document_url and not args.no_interactive:
@@ -609,8 +622,12 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--qna-no-stream can only be used with --mode qna")
     if args.batch_action and args.mode != "batch_ocr":
         parser.error("--batch-action can only be used with --mode batch_ocr")
+    if args.batch_action and not args.no_interactive:
+        parser.error("--batch-action requires --no-interactive")
     if args.batch_job_id and args.mode != "batch_ocr":
         parser.error("--batch-job-id can only be used with --mode batch_ocr")
+    if args.batch_job_id and not args.no_interactive:
+        parser.error("--batch-job-id requires --no-interactive")
 
 
 def _run_stdin_mode(args: argparse.Namespace) -> None:
@@ -675,10 +692,14 @@ def _run_direct_mode(args: argparse.Namespace) -> None:
         and (args.batch_action or "").lower().strip() in ("status", "list", "download")
     )
     if needs_files and not batch_no_files:
+        requested_files = len(files)
         files = _filter_valid_files(files, mode=args.mode)
+        dropped_files = requested_files - len(files)
         if not files:
             utils.ui_print("No valid files to process.")
             sys.exit(1)
+    else:
+        dropped_files = 0
 
     start_time = time.time()
     handler = _CLI_MODE_DISPATCH.get(args.mode)
@@ -702,6 +723,9 @@ def _run_direct_mode(args: argparse.Namespace) -> None:
         )
     else:
         success, message = handler(files)
+    if dropped_files:
+        success = False
+        message = f"{message}; skipped {dropped_files} invalid requested input(s)"
     utils.ui_print(f"\n{message}")
 
     elapsed = time.time() - start_time

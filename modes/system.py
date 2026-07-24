@@ -143,6 +143,7 @@ def mode_maintenance() -> Tuple[bool, str]:
     out("=" * 60 + "\n")
 
     actions_taken = []
+    failures = []
 
     # 1. Clear expired cache entries
     if config.AUTO_CLEAR_CACHE:
@@ -161,13 +162,15 @@ def mode_maintenance() -> Tuple[bool, str]:
         scope = getattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
         if scope not in ("registry", "all"):
             out("  - Skipped upload cleanup (invalid CLEANUP_UPLOAD_SCOPE; expected registry or all)")
+            failures.append("invalid CLEANUP_UPLOAD_SCOPE")
         elif scope == "all" and not _confirm_cleanup_upload_all():
             out("  - Skipped upload cleanup (account-wide scope not confirmed)")
+            failures.append("account-wide upload cleanup not confirmed")
         else:
             try:
                 client = mistral_converter.get_mistral_client()
                 if client:
-                    deleted = mistral_converter.cleanup_uploaded_files(client)
+                    deleted = mistral_converter.cleanup_uploaded_files(client, raise_on_error=True)
                     if deleted > 0:
                         msg = (
                             f"Cleaned up {deleted} old uploaded files from Mistral "
@@ -179,9 +182,11 @@ def mode_maintenance() -> Tuple[bool, str]:
                         out("  - No old uploaded files to clean up")
                 else:
                     out("  - Mistral client not available")
+                    failures.append("Mistral client not available")
             except Exception as e:
                 logger.debug("Could not clean up uploads: %s", e)
                 out(f"  ! Upload cleanup failed: {e}")
+                failures.append("upload cleanup failed")
     elif not config.MISTRAL_API_KEY:
         out("  - Skipping upload cleanup (no API key)")
     else:
@@ -193,4 +198,6 @@ def mode_maintenance() -> Tuple[bool, str]:
     out("\n" + "=" * 60 + "\n")
 
     summary = "; ".join(actions_taken) if actions_taken else "No actions needed"
+    if failures:
+        return False, f"Maintenance incomplete: {summary}; {'; '.join(failures)}"
     return True, f"Maintenance complete: {summary}"

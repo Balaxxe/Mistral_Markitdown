@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Parse-time budgets for OCR images, annotations, hyperlinks, headers, and footers; OOXML decompression preflight limits; and regression coverage for the security-review boundaries
+- `MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER` (default false) to require an explicit opt-in for arbitrary URL QnA through custom/private Mistral endpoints
 - `mistral_converter/` package split (client, upload, OCR, QnA, batch, SSRF, images) with facade-compatible `import mistral_converter`
 - `config.reload_settings()` for library embeds that change environment values after import; it refreshes every runtime setting, preserves process-environment precedence by default, and invalidates cached converter clients
 - `PDF_IMAGE_MAX_PAGES` (default 100) to bound local pdf2image rendering and reject capped conversions when the page count cannot be determined safely
@@ -35,7 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Interactive QnA treats an immediate exit, EOF, or Ctrl+C as a successful cancellation while still reporting attempted question failures
+- Secure defaults for `MISTRAL_BATCH_STRICT=true` and `STRICT_INPUT_PATH_RESOLUTION=true`; `MAX_BATCH_FILES` is now positive-only
+- Batch OCR and synchronous OCR share one process-wide reserved page budget; mode entry no longer resets already-consumed work
+- Interactive QnA defers upload until the first non-empty question and treats immediate exit, EOF, or Ctrl+C as a no-question failure
 - OCR session page-budget resets are skipped while reservations are active; PDFs with unknown page counts reserve the entire remaining active budget
 - Table extraction sidecars never abort primary conversion
 - Tighter pyright warnings (`reportGeneralTypeIssues` / `reportAttributeAccessIssue` / `reportMissingImports`)
@@ -56,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Batch job-ID path traversal, orphan cleanup, Poppler render-side page caps, CGNAT URL filtering, spreadsheet formula bypasses, misleading automation success, signed-URL error redaction, and zero-question QnA uploads
 - Bare API `403` / `access denied` no longer triggers QnA signed-URL re-upload retry unless paired with signed-URL expiry hints
 - Markdown table sidecars escape `|` and newlines in cells
 - `ui_print` sanitizes ANSI/C0 control characters in string arguments

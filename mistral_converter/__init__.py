@@ -42,6 +42,8 @@ from .ocr import (
 )
 from .qna import (
     _build_qna_messages,
+    _query_document_impl,
+    _query_document_stream_impl,
     query_document,
     query_document_file,
     query_document_stream,

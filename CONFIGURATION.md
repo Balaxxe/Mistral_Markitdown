@@ -445,6 +445,17 @@ MISTRAL_DOCUMENT_URL_STRICT_DNS=true
 MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS=5
 ```
 
+### MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER
+
+- **Type:** Boolean
+- **Default:** `false`
+- **Description:** Permit arbitrary document-URL QnA when `MISTRAL_SERVER_URL` is configured. Uploaded-file QnA remains available when this is false.
+- **Security:** A custom/private server performs the final URL fetch from its own network. The local client cannot enforce that server's redirect, DNS-pinning, or egress policy, so keep this false unless the server has equivalent controls and the URLs are trusted.
+
+```ini
+MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER=false
+```
+
 **CLI (non-interactive):** `--mode qna --no-interactive --qna-question "Your question?"` runs a single query without `input()` prompts.
 
 **Usage:** Programmatically query documents:
@@ -514,11 +525,11 @@ MISTRAL_BATCH_TIMEOUT_HOURS=24
 ### MISTRAL_BATCH_STRICT
 
 - **Type:** Boolean
-- **Default:** `false`
-- **Description:** When `true`, creating a batch JSONL file fails if any input file upload fails (default allows a partial batch with only successfully uploaded files).
+- **Default:** `true`
+- **Description:** Creating a batch JSONL file fails and cleans up its uploads if any input upload fails. Set this to `false` only when a clearly reported partial batch is acceptable.
 
 ```ini
-MISTRAL_BATCH_STRICT=false
+MISTRAL_BATCH_STRICT=true
 ```
 
 **CLI (non-interactive):** With `--mode batch_ocr --no-interactive`, use `--batch-action submit|status|list|download` and for status/download also `--batch-job-id <id>`. Status, list, and download do not require files in `input/`. Batch JSONL is written under a unique `cache/batch_ocr_*.jsonl` file per submit (signed URLs — keep `cache/` private; on Windows tighten directory ACLs if needed).
@@ -841,7 +852,8 @@ MAX_CONCURRENT_FILES=5
 
 - **Type:** Integer
 - **Default:** `100`
-- **Description:** Maximum files per batch
+- **Minimum:** `1` (zero and negative values fall back to the default)
+- **Description:** Hard maximum files per batch; it cannot be disabled with `0`.
 
 ```ini
 MAX_BATCH_FILES=100
@@ -1075,14 +1087,18 @@ MARKITDOWN_EXIFTOOL_PATH=""
 MARKITDOWN_MAX_FILE_SIZE_MB=100
 ```
 
+OOXML inputs (`.docx`, `.pptx`, and `.xlsx`) also receive fixed, non-configurable ZIP preflight limits before
+MarkItDown: package-shape and path checks, no encryption or nested archives, at most 2,000 members, 64 MiB per member,
+256 MiB aggregate declared size, and a maximum 100:1 compression ratio.
+
 ### STRICT_INPUT_PATH_RESOLUTION
 
 - **Type:** Boolean
-- **Default:** `false`
-- **Description:** When `true`, `validate_file()` rejects paths whose resolved location lies outside `input/`. Enable this to block symlink escapes from a shared inbox; leave it disabled for programmatic callers that intentionally pass arbitrary paths.
+- **Default:** `true`
+- **Description:** `validate_file()` rejects paths whose resolved location lies outside `input/`, including symlink escapes. Programmatic callers that intentionally accept arbitrary paths can explicitly set this to `false` after defining their own trust boundary.
 
 ```ini
-STRICT_INPUT_PATH_RESOLUTION=false
+STRICT_INPUT_PATH_RESOLUTION=true
 ```
 
 ### CLEANUP_UPLOAD_ALL_CONFIRM
@@ -1253,7 +1269,7 @@ VERBOSE_PROGRESS=true
 | MISTRAL_API_KEY                    | string | ""                   | Yes (for mistral_ocr, qna, batch_ocr; optional for smart/markitdown) | API Keys          |
 | MISTRAL_SERVER_URL                 | string | ""                   | No                                                                    | API Keys          |
 | ALLOW_INSECURE_MISTRAL_SERVER      | bool   | false                | No                                                                    | API Keys          |
-| STRICT_INPUT_PATH_RESOLUTION       | bool   | false                | No                                                                    | Security          |
+| STRICT_INPUT_PATH_RESOLUTION       | bool   | true                 | No                                                                    | Security          |
 | MISTRAL_OCR_MODEL                  | string | mistral-ocr-latest   | No                                                                    | OCR               |
 | MISTRAL_INCLUDE_IMAGES             | bool   | true                 | No                                                                    | OCR               |
 | SAVE_MISTRAL_JSON                  | bool   | false                | No                                                                    | OCR               |
@@ -1286,10 +1302,11 @@ VERBOSE_PROGRESS=true
 | MISTRAL_QNA_MAX_FILE_SIZE_MB       | int    | 50                   | No                                                                    | Document QnA      |
 | MISTRAL_DOCUMENT_URL_STRICT_DNS    | bool   | true                 | No                                                                    | Document QnA      |
 | MISTRAL_DOCUMENT_URL_DNS_TIMEOUT_SECONDS | int | 5                  | No                                                                    | Document QnA      |
+| MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER | bool | false            | No                                                                    | Document QnA      |
 | MISTRAL_BATCH_ENABLED              | bool   | true                 | No                                                                    | Batch OCR         |
 | MISTRAL_BATCH_MIN_FILES            | int    | 10                   | No                                                                    | Batch OCR         |
 | MISTRAL_BATCH_TIMEOUT_HOURS        | int    | 24                   | No                                                                    | Batch OCR         |
-| MISTRAL_BATCH_STRICT               | bool   | false                | No                                                                    | Batch OCR         |
+| MISTRAL_BATCH_STRICT               | bool   | true                 | No                                                                    | Batch OCR         |
 | CLEANUP_OLD_UPLOADS                | bool   | true                 | No                                                                    | File Management   |
 | CLEANUP_UPLOAD_SCOPE               | string | registry             | No                                                                    | File Management   |
 | UPLOAD_RETENTION_DAYS              | int    | 7                    | No                                                                    | File Management   |

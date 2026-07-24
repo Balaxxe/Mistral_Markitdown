@@ -23,10 +23,21 @@ _SIGNED_URL_SPECIFIC_HINTS: Tuple[str, ...] = (
     "expired signature",
 )
 
-# Fetch/download failures are sufficient alone (object store could not serve the URL).
+# A generic fetch/download failure is not enough to prove a signed URL expired.
+# It must be paired with an object-store authorization or expiry response.
 _SIGNED_URL_FETCH_HINTS: Tuple[str, ...] = (
     "failed to fetch document",
     "could not download",
+)
+
+_OBJECT_STORE_AUTH_OR_EXPIRY_HINTS: Tuple[str, ...] = (
+    "403 forbidden",
+    "request has expired",
+    "requestexpired",
+    "expiredtoken",
+    "signaturedoesnotmatch",
+    "authorization query parameters",
+    "access denied",
 )
 
 # Note: bare "403 forbidden" / "access denied" are intentionally NOT always-true
@@ -48,16 +59,18 @@ def is_signed_url_expiry_error(message: Optional[str]) -> bool:
     """Classify a QnA/OCR error message as a likely signed-URL expiry.
 
     Returns True only for messages that look like the object store rejected
-    the signed URL (e.g. "signed URL has expired", fetch/download failures).
-    Bare 403 / access-denied messages are retryable only when also paired with
-    a signed-URL-specific hint. Returns False for Mistral API auth failures.
+    the signed URL (e.g. "signed URL has expired"). Generic fetch/download
+    failures are retryable only when paired with an object-store authorization
+    or expiry response. Returns False for Mistral API auth failures.
     """
     if not message:
         return False
     lowered = message.lower()
     if any(hint in lowered for hint in _PERMANENT_AUTH_HINTS):
         return False
-    if any(hint in lowered for hint in _SIGNED_URL_FETCH_HINTS):
+    if any(hint in lowered for hint in _SIGNED_URL_FETCH_HINTS) and any(
+        hint in lowered for hint in _OBJECT_STORE_AUTH_OR_EXPIRY_HINTS
+    ):
         return True
     has_signed_url_hint = any(hint in lowered for hint in _SIGNED_URL_SPECIFIC_HINTS)
     if has_signed_url_hint:
@@ -84,9 +97,21 @@ def _is_forbidden_address(addr: Any) -> bool:
     """Return True if *addr* points to a private/internal/reserved network."""
     if addr.is_private or addr.is_reserved or addr.is_loopback or addr.is_link_local or addr.is_multicast:
         return True
+    # RFC 6598 shared address space is neither ``is_private`` nor
+    # ``is_reserved`` in Python's ipaddress module, but it is not routable on
+    # the public Internet and must not be reachable through document URLs.
+    shared_ipv4_network = ipaddress.ip_network("100.64.0.0/10")
+    if isinstance(addr, ipaddress.IPv4Address) and addr in shared_ipv4_network:
+        return True
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
         mapped = addr.ipv4_mapped
-        if mapped.is_private or mapped.is_loopback or mapped.is_reserved or mapped.is_link_local:
+        if (
+            mapped.is_private
+            or mapped.is_loopback
+            or mapped.is_reserved
+            or mapped.is_link_local
+            or mapped in shared_ipv4_network
+        ):
             return True
     return False
 

@@ -40,12 +40,31 @@ def _prepare_qna_call(
     question: str,
     model: Optional[str],
     strict_dns: Optional[bool] = None,
+    *,
+    trusted_uploaded_url: bool = False,
 ) -> Tuple[bool, Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
     """Shared setup for QnA calls: validate URL, resolve model, build params.
 
     Returns:
         (ok, client_or_None, params_dict_or_None, error_or_None)
     """
+    # A custom API endpoint may be private. Passing an arbitrary user URL to
+    # it delegates fetches to that endpoint and bypasses this client's SSRF
+    # boundary. Only the internal local-upload path may mark a URL trusted;
+    # ``strict_dns=False`` is a DNS policy override, not proof of provenance.
+    if (
+        config.MISTRAL_SERVER_URL
+        and not getattr(config, "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", False)
+        and not trusted_uploaded_url
+    ):
+        return (
+            False,
+            None,
+            None,
+            "Document URL QnA is disabled when MISTRAL_SERVER_URL is configured. "
+            "Set MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER=true to opt in.",
+        )
+
     client = attr("get_mistral_client")()
     if client is None:
         return False, None, None, "Mistral client not available"
@@ -74,6 +93,47 @@ def _prepare_qna_call(
         params["document_page_limit"] = config.MISTRAL_QNA_DOCUMENT_PAGE_LIMIT
 
     return True, client, params, None
+
+
+def _query_document_impl(
+    document_url: str,
+    question: str,
+    model: Optional[str] = None,
+    strict_dns: Optional[bool] = None,
+    *,
+    trusted_uploaded_url: bool = False,
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Execute a non-streaming QnA request after applying URL policy."""
+    ok, client, params, err = _prepare_qna_call(
+        document_url,
+        question,
+        model,
+        strict_dns=strict_dns,
+        trusted_uploaded_url=trusted_uploaded_url,
+    )
+    if not ok or client is None or params is None:
+        return False, None, err
+
+    try:
+        logger.debug("Querying document (question length=%d)", len(question))
+
+        response = client.chat.complete(**params)
+
+        if response and response.choices and len(response.choices) > 0:
+            answer = response.choices[0].message.content
+            logger.info("Document query successful")
+            return True, answer, None
+        else:
+            return False, None, "Empty response from chat completion"
+
+    except Exception as e:
+        error_msg = utils.redact_sensitive_url_data(f"Error querying document: {e}")
+        http_types = _http_client_exceptions()
+        if http_types and isinstance(e, http_types):
+            logger.error(error_msg)
+        else:
+            logger.exception(error_msg)
+        return False, None, error_msg
 
 
 def query_document(
@@ -109,30 +169,7 @@ def query_document(
     Documentation:
         https://docs.mistral.ai/capabilities/document_ai/document_qna
     """
-    ok, client, params, err = _prepare_qna_call(document_url, question, model, strict_dns=strict_dns)
-    if not ok or client is None or params is None:
-        return False, None, err
-
-    try:
-        logger.debug("Querying document (question length=%d)", len(question))
-
-        response = client.chat.complete(**params)
-
-        if response and response.choices and len(response.choices) > 0:
-            answer = response.choices[0].message.content
-            logger.info("Document query successful")
-            return True, answer, None
-        else:
-            return False, None, "Empty response from chat completion"
-
-    except Exception as e:
-        error_msg = f"Error querying document: {e}"
-        http_types = _http_client_exceptions()
-        if http_types and isinstance(e, http_types):
-            logger.error(error_msg)
-        else:
-            logger.exception(error_msg)
-        return False, None, error_msg
+    return _query_document_impl(document_url, question, model, strict_dns=strict_dns)
 
 
 def query_document_stream(
@@ -156,7 +193,29 @@ def query_document_stream(
     Returns:
         Tuple of (success, event_stream_or_None, error_message)
     """
-    ok, client, params, err = _prepare_qna_call(document_url, question, model, strict_dns=strict_dns)
+    return _query_document_stream_impl(document_url, question, model, strict_dns=strict_dns)
+
+
+def _query_document_stream_impl(
+    document_url: str,
+    question: str,
+    model: Optional[str] = None,
+    strict_dns: Optional[bool] = None,
+    *,
+    trusted_uploaded_url: bool = False,
+) -> Tuple[bool, Optional[Any], Optional[str]]:
+    """Execute a streaming QnA request after applying URL policy.
+
+    ``trusted_uploaded_url`` is intentionally private: it is only for a URL
+    returned by this package's upload flow, never a caller-supplied URL.
+    """
+    ok, client, params, err = _prepare_qna_call(
+        document_url,
+        question,
+        model,
+        strict_dns=strict_dns,
+        trusted_uploaded_url=trusted_uploaded_url,
+    )
     if not ok or client is None or params is None:
         return False, None, err
 
@@ -167,7 +226,7 @@ def query_document_stream(
         return True, event_stream, None
 
     except Exception as e:
-        error_msg = f"Error streaming document query: {e}"
+        error_msg = utils.redact_sensitive_url_data(f"Error streaming document query: {e}")
         http_types = _http_client_exceptions()
         if http_types and isinstance(e, http_types):
             logger.error(error_msg)
@@ -211,7 +270,7 @@ def query_document_file(
                 ),
             )
     except OSError as e:
-        return False, None, f"Cannot read file: {e}"
+        return False, None, utils.redact_sensitive_url_data(f"Cannot read file: {e}")
 
     try:
         # Upload file and get signed URL
@@ -219,11 +278,18 @@ def query_document_file(
         if not signed_url:
             return False, None, "Failed to upload file for QnA"
 
-        # Signed URLs from Mistral may not resolve via local DNS; skip fail-closed DNS.
-        return attr("query_document")(signed_url, question, model, strict_dns=False)
+        # Signed URLs from Mistral may not resolve via local DNS; skip
+        # fail-closed DNS only for this internally-produced upload URL.
+        return _query_document_impl(
+            signed_url,
+            question,
+            model,
+            strict_dns=False,
+            trusted_uploaded_url=True,
+        )
 
     except Exception as e:
-        error_msg = f"Error querying document file: {e}"
+        error_msg = utils.redact_sensitive_url_data(f"Error querying document file: {e}")
         http_types = _http_client_exceptions()
         if http_types and isinstance(e, http_types):
             logger.error(error_msg)

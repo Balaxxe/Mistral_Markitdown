@@ -63,6 +63,7 @@ Document conversion depends on MarkItDown, pdfplumber, Poppler (pdf2image), and 
 - **Document QnA:** Files exceeding `MISTRAL_QNA_MAX_FILE_SIZE_MB` (default: 50 MB) are rejected.
 - **PDF table extraction and PDF-to-images:** In the CLI pipeline, skipped when the PDF exceeds `max(MARKITDOWN_MAX_FILE_SIZE_MB, MISTRAL_OCR_MAX_FILE_SIZE_MB)` (see `config.pdf_heavy_work_max_file_size_mb()` / `utils.pdf_exceeds_heavy_work_limit`) to avoid expensive local work on files that would fail size checks on the conversion path.
 - **ZIP and EPUB:** Local conversion is disabled until MarkItDown archive traversal can enforce shared decompressed-byte, member-count, and nesting-depth budgets.
+- **OOXML (`.docx`, `.pptx`, `.xlsx`):** Before MarkItDown, the ZIP central directory is checked for package shape, safe member paths, encryption, nested archives, at most 2,000 members, 64 MiB per member, 256 MiB aggregate declared size, and a maximum 100:1 compression ratio.
 
 ### File Upload Security
 
@@ -80,9 +81,11 @@ All document URLs (for QnA and streaming) are validated before use:
 - URLs with embedded credentials are rejected.
 - Private/internal network addresses are blocked (RFC 1918, link-local, loopback, cloud metadata endpoints including `169.254.169.254`).
 - IPv6-mapped IPv4 addresses are checked for private ranges.
+- Carrier-grade NAT/shared space (`100.64.0.0/10`) is treated as internal and blocked.
 - DNS resolution is verified with a 5-second timeout to prevent DNS rebinding stalling.
 - **`MISTRAL_DOCUMENT_URL_STRICT_DNS`:** Default `true` — user-supplied document URLs that fail local DNS resolution or time out are rejected (fail closed). Post-upload Mistral signed URLs (file QnA) relax this check so local DNS hiccups do not break the upload→query path. Set to `false` only if you need fail-open for unresolved public hostnames.
 - **`ALLOW_INSECURE_MISTRAL_SERVER`:** Default `false`. Cleartext `http://` values for `MISTRAL_SERVER_URL` are rejected unless this is explicitly enabled (API keys must not travel in cleartext).
+- **`MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER`:** Default `false`. Arbitrary URL QnA is disabled when `MISTRAL_SERVER_URL` is configured because that server performs the fetch from a network the client cannot police. Uploaded-file QnA remains available.
 
 **Known limitation (server-side fetch):** The local DNS resolution check cannot fully prevent DNS rebinding or
 redirect-to-private-network attacks because Mistral's servers independently resolve and fetch the document URL.
@@ -101,7 +104,7 @@ Batch job IDs entered interactively are validated against `^[a-zA-Z0-9_\-]{1,128
 
 ### Input Path Confinement
 
-`STRICT_INPUT_PATH_RESOLUTION` defaults to `false` for compatibility with programmatic callers that pass arbitrary paths. Enable it for shared inboxes so `utils.validate_file` rejects paths (including symlink escapes) that resolve outside `input/`.
+`STRICT_INPUT_PATH_RESOLUTION` defaults to `true`, so `utils.validate_file` rejects paths (including symlink escapes) that resolve outside `input/`. Programmatic callers that deliberately support arbitrary paths may explicitly opt out only after enforcing an equivalent trust boundary.
 
 ### Account-wide upload cleanup
 
@@ -122,7 +125,7 @@ The following limits prevent runaway API spend and resource exhaustion:
 | `MARKITDOWN_MAX_FILE_SIZE_MB`  | 100     | Hard reject before local conversion             |
 | `MISTRAL_OCR_MAX_FILE_SIZE_MB` | 200     | Hard reject before Mistral upload               |
 | `MISTRAL_QNA_MAX_FILE_SIZE_MB` | 50      | Hard reject before Document QnA upload          |
-| `MAX_BATCH_FILES`              | 100     | Hard reject in smart, MarkItDown, OCR, PDF→images, and batch modes |
+| `MAX_BATCH_FILES`              | 100     | Positive-only hard reject in smart, MarkItDown, OCR, PDF→images, and batch modes |
 | `MAX_PAGES_PER_SESSION`        | 1000    | Positive-only shared OCR/batch admission, PDF rendering, and table-work cap (`0`/negative values fall back to 1000) |
 | `PDF_IMAGE_MAX_PAGES`          | 100     | Additional PDF-rendering cap; combined with the session page limit (`0` defers to the session limit) |
 | `MAX_CONCURRENT_FILES`         | 5       | Thread pool cap for parallel processing         |
@@ -131,10 +134,13 @@ The following limits prevent runaway API spend and resource exhaustion:
 
 Additional fixed safety ceilings bound OCR page text (10 MiB per page and 50 MiB aggregate), tables (256 per page,
 4,096 replacements per page, 8 MiB content per table, and 10 MiB aggregate table content), and extracted images
-(100 images; 10 MiB encoded and 7 MiB decoded per image; 50 MiB aggregate decoded data). Batch input is capped at
-1 GiB aggregate and result downloads at 512 MiB. Batch downloads require an unconsumed streaming SDK response;
-eager compatibility payloads are rejected because they cannot be bounded before allocation. OCR text is revalidated
-after weak-page improvement, and all limit violations fail before the affected output set is published.
+(100 entries, including payload-less metadata; 10 MiB encoded and 7 MiB decoded per image; 50 MiB aggregate decoded
+data). OCR hyperlinks are capped at 4,096 per page, headers/footers at 256 KiB each, bounding-box annotations at
+4,096, and all structured OCR fields share a 10 MiB / 100,000-node response budget with depth and string-size limits.
+These checks run before parser-owned copies are retained. Batch input is capped at 1 GiB aggregate and result
+downloads at 512 MiB. Batch downloads require an unconsumed streaming SDK response; eager compatibility payloads
+are rejected because they cannot be bounded before allocation. OCR text is revalidated after weak-page improvement,
+and all limit violations fail before the affected output set is published.
 
 ---
 
@@ -154,11 +160,19 @@ OCR output and QnA answers are derived from document content that may include:
 
 Metadata strings in YAML frontmatter are escaped via `json.dumps` to prevent injection of arbitrary YAML.
 
+### Extracted Tables
+
+CSV and Markdown table sidecars prefix formula-like cells with an apostrophe. Admission ignores leading whitespace
+and byte-order marks and recognizes both ASCII and fullwidth equals signs, preventing common spreadsheet-formula
+injection bypasses when sidecars are opened or copied into spreadsheet software.
+
 ### Terminal Output
 
 QnA answers and operational log records are sanitized to strip ANSI escape sequences and non-printable control
-characters before terminal display. Embedded carriage returns and newlines in log values are escaped so one
-attacker-controlled value cannot forge additional log records.
+characters before terminal display. QnA answer lines are visibly prefixed, carriage returns are rendered literally,
+and embedded newlines in log values are escaped so one attacker-controlled value cannot forge additional log
+records. Common signed-URL credential query values are redacted from terminal/log output and returned cloud-error
+messages.
 
 ---
 
@@ -197,7 +211,7 @@ Documents processed via QnA may contain text that attempts to manipulate the LLM
 
 ### Cost Abuse
 
-Crafted inputs could trigger excessive API calls (e.g., documents with many weak pages triggering re-OCR). The session page limit (`MAX_PAGES_PER_SESSION`) and batch file limit (`MAX_BATCH_FILES`) mitigate this.
+Crafted inputs could trigger excessive API calls (e.g., documents with many weak pages triggering re-OCR). Every weak page is retried at most once, each retry reserves against the same process-wide page budget, and batch admission charges its aggregate estimate to that budget. `MAX_PAGES_PER_SESSION` and the positive-only `MAX_BATCH_FILES` cap bound the work.
 
 ---
 

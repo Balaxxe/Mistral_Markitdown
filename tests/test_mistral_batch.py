@@ -48,6 +48,14 @@ class TestGetBatchJobStatus:
             ok, status, err = mistral_converter.get_batch_job_status("job_123")
         assert ok is False
 
+    def test_rejects_path_traversal_before_api_call(self):
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            ok, status, error = mistral_converter.get_batch_job_status("../outside")
+
+        assert (ok, status) == (False, None)
+        assert "invalid" in (error or "").lower()
+        mock_get.assert_not_called()
+
     def test_api_error(self):
         with patch.object(mistral_converter, "get_mistral_client") as mock_get:
             mock_client = MagicMock()
@@ -65,6 +73,15 @@ class TestGetBatchJobStatus:
 
 class TestDownloadBatchResults:
     """Test batch result downloading."""
+
+    def test_rejects_path_traversal_before_api_call(self, tmp_path):
+        with patch.object(mistral_converter, "get_mistral_client") as mock_get:
+            ok, path, error = mistral_converter.download_batch_results("../outside", output_dir=tmp_path)
+
+        assert (ok, path) == (False, None)
+        assert "invalid" in (error or "").lower()
+        assert not (tmp_path.parent / "outside.jsonl").exists()
+        mock_get.assert_not_called()
 
     def test_successful_download(self, tmp_path):
         mock_job = MagicMock()
@@ -355,6 +372,23 @@ class TestSubmitBatchOcrJob:
         assert ok is True
         assert job_id == "job_abc"
 
+    def test_invalid_remote_job_id_cannot_escape_metadata_directory(self, tmp_path, monkeypatch):
+        batch_file = tmp_path / "batch.jsonl"
+        batch_file.write_text('{"body": {}}\n')
+        metadata_dir = tmp_path / "metadata"
+        monkeypatch.setattr(config, "METADATA_DIR", metadata_dir)
+        monkeypatch.setattr(config, "ENABLE_BATCH_METADATA", True)
+
+        mock_client = MagicMock()
+        mock_client.files.upload.return_value = MagicMock(id="batch_file_id")
+        mock_client.batch.jobs.create.return_value = MagicMock(id="../escaped")
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            ok, job_id, error = mistral_converter.submit_batch_ocr_job(batch_file)
+
+        assert (ok, job_id, error) == (True, "../escaped", None)
+        assert not metadata_dir.exists()
+        assert not (tmp_path / "escaped.json").exists()
+
     def test_api_error(self, tmp_path):
         batch_file = tmp_path / "batch.jsonl"
         batch_file.write_text('{"body": {}}\n')
@@ -436,6 +470,9 @@ class TestCreateBatchOcrFileFull:
     @pytest.fixture(autouse=True)
     def _allow_tmp_batch_inputs(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+        mistral_converter.reset_session_page_counter()
+        yield
+        mistral_converter.reset_session_page_counter()
 
     def test_successful_creation(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
@@ -531,6 +568,7 @@ class TestCreateBatchOcrFileFull:
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
         monkeypatch.setattr(config, "MISTRAL_BATCH_TIMEOUT_HOURS", 24)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
+        monkeypatch.setattr(config, "MISTRAL_BATCH_STRICT", False)
 
         pdf = tmp_path / "doc.pdf"
         pdf.write_bytes(b"%PDF")
@@ -636,6 +674,167 @@ class TestCreateBatchOcrFileFull:
         assert (ok, path) == (False, None)
         assert "maximum" in (error or "").lower()
         client.assert_not_called()
+
+    def test_rejects_nonpositive_file_limit_before_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_BATCH_FILES", 0)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+
+        with patch.object(mistral_converter, "get_mistral_client") as client:
+            ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+
+        assert (ok, path) == (False, None)
+        assert "max_batch_files" in (error or "").lower()
+        client.assert_not_called()
+
+    def test_reserves_against_existing_session_usage_before_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 3)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+        assert mistral_converter._reserve_session_pages(2) is True
+        assert mistral_converter._commit_session_pages(2, 2) is True
+
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+            with patch.object(mistral_converter, "get_mistral_client") as client:
+                ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+
+        assert (ok, path) == (False, None)
+        assert "remaining session" in (error or "").lower()
+        client.assert_not_called()
+
+    def test_releases_page_reservation_and_deletes_uploads_when_write_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 2)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+        client = MagicMock()
+
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+                with patch.object(
+                    mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
+                ):
+                    with patch.object(batch_module.utils, "atomic_write_text", side_effect=OSError("disk full")):
+                        ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+
+        assert (ok, path) == (False, None)
+        assert "disk full" in (error or "")
+        client.files.delete.assert_called_once_with(file_id="file-1")
+        assert mistral_converter._reserve_session_pages(2) is True
+        mistral_converter._release_session_pages_reservation(2)
+
+    def test_chmod_failure_scrubs_jsonl_deletes_uploads_and_releases_reservation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 2)
+        monkeypatch.setattr(batch_module.sys, "platform", "linux")
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+        output = tmp_path / "batch.jsonl"
+        client = MagicMock()
+
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+                with patch.object(
+                    mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
+                ):
+                    with patch.object(batch_module.os, "chmod", side_effect=OSError("chmod denied")):
+                        ok, path, error = mistral_converter.create_batch_ocr_file([pdf], output)
+
+        assert (ok, path) == (False, None)
+        assert "chmod denied" in (error or "")
+        assert not output.exists()
+        client.files.delete.assert_called_once_with(file_id="file-1")
+        assert mistral_converter._reserve_session_pages(2) is True
+        mistral_converter._release_session_pages_reservation(2)
+
+    def test_commits_batch_page_estimate_after_jsonl_creation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 3)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+        client = MagicMock()
+
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+                with patch.object(
+                    mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
+                ):
+                    ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+
+        assert (ok, path, error) == (True, tmp_path / "batch.jsonl", None)
+        assert mistral_converter._reserve_session_pages(2) is False
+
+    def test_failed_commit_does_not_release_a_later_reservation(self, tmp_path, monkeypatch):
+        """A failed commit already consumed its reservation before ``finally`` runs."""
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 4)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+        client = MagicMock()
+        commit_pages = mistral_converter._commit_session_pages
+
+        def commit_then_fail(reserved, actual):
+            assert commit_pages(reserved, actual) is True
+            # Model a concurrent worker reserving pages after the commit has
+            # released this batch's inflight credit.
+            assert mistral_converter._reserve_session_pages(2) is True
+            return False
+
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+                with patch.object(
+                    mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
+                ):
+                    with patch.object(mistral_converter, "_commit_session_pages", side_effect=commit_then_fail):
+                        ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+
+        assert (ok, path) == (False, None)
+        assert "could not be committed" in (error or "")
+        assert mistral_converter._session_pages_processed == 2
+        assert mistral_converter._session_pages_inflight == 2
+        mistral_converter._release_session_pages_reservation(2)
+
+    def test_raised_commit_does_not_release_a_later_reservation(self, tmp_path, monkeypatch):
+        """An exception after commit consumption must not trigger a second release."""
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 4)
+        pdf = tmp_path / "document.pdf"
+        pdf.write_bytes(b"%PDF")
+        client = MagicMock()
+        commit_pages = mistral_converter._commit_session_pages
+
+        def commit_then_raise(reserved, actual):
+            assert commit_pages(reserved, actual) is True
+            assert mistral_converter._reserve_session_pages(2) is True
+            raise RuntimeError("commit observer failed")
+
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+                with patch.object(
+                    mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
+                ):
+                    with patch.object(mistral_converter, "_commit_session_pages", side_effect=commit_then_raise):
+                        ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+
+        assert (ok, path) == (False, None)
+        assert "commit observer failed" in (error or "")
+        assert mistral_converter._session_pages_processed == 2
+        assert mistral_converter._session_pages_inflight == 2
+        mistral_converter._release_session_pages_reservation(2)
+
+    def test_non_strict_partial_batch_logs_visible_omission_warning(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(config, "MISTRAL_BATCH_STRICT", False)
+        first = tmp_path / "first.pdf"
+        second = tmp_path / "second.pdf"
+        first.write_bytes(b"%PDF")
+        second.write_bytes(b"%PDF")
+
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=1):
+            with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+                with patch.object(
+                    mistral_converter,
+                    "_upload_file_for_ocr_pair",
+                    side_effect=[("https://signed", "file-1"), None],
+                ):
+                    ok, path, error = mistral_converter.create_batch_ocr_file([first, second], tmp_path / "batch.jsonl")
+
+        assert (ok, path, error) == (True, tmp_path / "batch.jsonl", None)
+        assert "1 of 2" in caplog.text
 
     def test_rejects_invalid_file_before_upload(self, tmp_path):
         invalid = tmp_path / "not-ocr.exe"

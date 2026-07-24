@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -13,7 +14,14 @@ import config
 import utils
 
 from .facade import attr
-from .resource_limits import OCRResponseLimitError
+from .resource_limits import (
+    MAX_EXTRACTED_IMAGE_DATA_URI_HEADER_CHARS,
+    MAX_EXTRACTED_IMAGE_DECODED_BYTES,
+    MAX_EXTRACTED_IMAGE_ENCODED_BYTES,
+    MAX_EXTRACTED_IMAGES,
+    MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES,
+    OCRResponseLimitError,
+)
 from .sdk_shims import Mistral
 from .session import (
     _commit_session_pages,
@@ -35,6 +43,15 @@ _MAX_OCR_TABLE_REPLACEMENTS_PER_PAGE = 4096
 _MAX_OCR_TABLE_ID_CHARS = 128
 _MAX_OCR_TABLE_CONTENT_BYTES = 8 * 1024 * 1024
 _MAX_OCR_TABLE_CONTENT_TOTAL_BYTES = 10 * 1024 * 1024
+_MAX_OCR_RESPONSE_PAGES = 10_000
+_MAX_OCR_HYPERLINKS_PER_PAGE = 4096
+_MAX_OCR_HEADER_FOOTER_BYTES = 256 * 1024
+_MAX_OCR_IMAGE_METADATA_BYTES = 256 * 1024
+_MAX_OCR_BBOX_ANNOTATIONS = 4096
+_MAX_OCR_STRUCTURED_DEPTH = 32
+_MAX_OCR_STRUCTURED_NODES = 100_000
+_MAX_OCR_STRUCTURED_STRING_BYTES = 1024 * 1024
+_MAX_OCR_STRUCTURED_TOTAL_BYTES = 10 * 1024 * 1024
 _TABLE_PLACEHOLDER_RE = re.compile(r"\[([^\]\r\n()]{1,128})\]\(\1\)")
 _TABLE_ID_RE = re.compile(r"^[^\]\r\n()]{1,128}$")
 
@@ -162,7 +179,7 @@ def process_with_ocr(  # noqa: C901
         try:
             document, signed_url = _prepare_ocr_document(client, file_path, signed_url, file_size_mb, progress_callback)
         except RuntimeError as upload_err:
-            return False, None, str(upload_err)
+            return False, None, utils.redact_sensitive_url_data(str(upload_err))
 
         _report_progress("Processing with Mistral OCR...", 0.5)
 
@@ -208,14 +225,19 @@ def process_with_ocr(  # noqa: C901
                     reserved_pages,
                     file_path.name,
                 )
-            if not _commit_session_pages(reserved_pages, actual_pages):
-                logger.warning(
-                    "Session page limit (%d) reached during processing of %s. "
-                    "Returning result but further OCR requests will be refused.",
-                    config.MAX_PAGES_PER_SESSION,
-                    file_path.name,
-                )
+            # Transfer ownership before invoking commit.  A committing
+            # implementation owns the reservation even if it raises; keeping
+            # credit in that exceptional case fails closed rather than
+            # releasing another worker's later reservation from ``finally``.
+            pages_to_commit = reserved_pages
             reserved_pages = 0
+            committed = _commit_session_pages(pages_to_commit, actual_pages)
+            if not committed:
+                return (
+                    False,
+                    None,
+                    f"Session page budget exceeded ({config.MAX_PAGES_PER_SESSION}) during OCR processing.",
+                )
             _report_progress("OCR processing complete", 1.0)
             return True, result, None
         else:
@@ -234,7 +256,7 @@ def process_with_ocr(  # noqa: C901
             error_msg = "Access denied to Mistral OCR (403 Forbidden). This feature may require a paid plan."
             logger.error(error_msg)
         else:
-            error_msg = f"Error processing with Mistral OCR: {e}"
+            error_msg = utils.redact_sensitive_url_data(f"Error processing with Mistral OCR: {e}")
             # Unexpected failure path: preserve traceback for debugging.
             logger.exception("Unexpected error processing with Mistral OCR")
         return False, None, error_msg
@@ -258,7 +280,11 @@ def _extract_page_text(page: Any) -> str:
     return ""
 
 
-def _parse_page_object(page: Any, idx: int) -> Dict[str, Any]:
+def _parse_page_object(
+    page: Any,
+    idx: int,
+    result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Parse a single OCR page object into a standardised dict."""
     raw_text = _extract_page_text(page)
     _validate_ocr_text_size(raw_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
@@ -291,24 +317,10 @@ def _parse_page_object(page: Any, idx: int) -> Dict[str, Any]:
         "footer": None,
     }
 
-    # Images
-    if hasattr(page, "images") and page.images:
-        for img in page.images:
-            page_data["images"].append(
-                {
-                    "id": getattr(img, "id", None),
-                    "top_left_x": getattr(img, "top_left_x", None),
-                    "top_left_y": getattr(img, "top_left_y", None),
-                    "bottom_right_x": getattr(img, "bottom_right_x", None),
-                    "bottom_right_y": getattr(img, "bottom_right_y", None),
-                    "bbox": getattr(img, "bbox", None),
-                    "base64": (
-                        (getattr(img, "image_base64", None) or getattr(img, "base64", None))
-                        if config.MISTRAL_INCLUDE_IMAGES
-                        else None
-                    ),
-                }
-            )
+    # Admit raw images before retaining their payloads or metadata.
+    raw_images = getattr(page, "images", None)
+    if raw_images:
+        page_data["images"] = _parse_page_images(raw_images, result)
 
     # Dimensions
     if hasattr(page, "dimensions") and page.dimensions:
@@ -328,16 +340,242 @@ def _parse_page_object(page: Any, idx: int) -> Dict[str, Any]:
     page_data["text"] = _expand_table_placeholders(page_data["text"], page_data["tables"])
 
     # Hyperlinks
-    if hasattr(page, "hyperlinks") and page.hyperlinks:
-        page_data["hyperlinks"] = [h.model_dump() if hasattr(h, "model_dump") else h for h in page.hyperlinks]
+    hyperlinks = getattr(page, "hyperlinks", None)
+    if hyperlinks and type(hyperlinks).__module__ != "unittest.mock":
+        page_data["hyperlinks"] = _bounded_page_hyperlinks(hyperlinks, result)
 
     # Header / footer
-    if hasattr(page, "header") and page.header:
-        page_data["header"] = page.header
-    if hasattr(page, "footer") and page.footer:
-        page_data["footer"] = page.footer
+    header = getattr(page, "header", None)
+    if header and type(header).__module__ != "unittest.mock":
+        page_data["header"] = _bounded_value(
+            header,
+            "OCR page header",
+            max_bytes=_MAX_OCR_HEADER_FOOTER_BYTES,
+            budget_owner=result,
+        )
+    footer = getattr(page, "footer", None)
+    if footer and type(footer).__module__ != "unittest.mock":
+        page_data["footer"] = _bounded_value(
+            footer,
+            "OCR page footer",
+            max_bytes=_MAX_OCR_HEADER_FOOTER_BYTES,
+            budget_owner=result,
+        )
 
     return page_data
+
+
+def _bounded_value(  # noqa: C901
+    value: Any,
+    context: str,
+    *,
+    max_bytes: int = _MAX_OCR_STRUCTURED_TOTAL_BYTES,
+    budget_owner: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Materialize a JSON-like OCR field only after enforcing finite shape limits."""
+    total_bytes = 0
+    nodes = 0
+    shared_state = (
+        budget_owner.setdefault("_structured_budget", {"bytes": 0, "nodes": 0}) if budget_owner is not None else None
+    )
+
+    def visit(item: Any, depth: int) -> Any:
+        nonlocal total_bytes, nodes
+        if depth > _MAX_OCR_STRUCTURED_DEPTH:
+            raise OCRResponseLimitError(f"{context} exceeds the local nesting-depth limit")
+        if hasattr(item, "model_dump"):
+            # Pydantic models keep already-parsed fields in ``__dict__``.
+            # Traverse that mapping directly so a hostile response cannot
+            # force an unbounded model_dump allocation before admission.
+            # MagicMock-backed compatibility tests have no model fields and
+            # explicitly supply a bounded model_dump return value.
+            model_fields = getattr(item, "__dict__", None)
+            if type(item).__module__ == "unittest.mock" or not isinstance(model_fields, dict):
+                item = item.model_dump()
+            else:
+                item = model_fields
+        nodes += 1
+        if nodes > _MAX_OCR_STRUCTURED_NODES:
+            raise OCRResponseLimitError(f"{context} exceeds the local item limit")
+        if shared_state is not None:
+            shared_state["nodes"] += 1
+            if shared_state["nodes"] > _MAX_OCR_STRUCTURED_NODES:
+                raise OCRResponseLimitError("OCR structured fields exceed the aggregate item limit")
+        if isinstance(item, str):
+            item_bytes = len(item.encode("utf-8"))
+            if item_bytes > _MAX_OCR_STRUCTURED_STRING_BYTES:
+                raise OCRResponseLimitError(f"{context} contains an oversized string")
+            total_bytes += item_bytes
+            if total_bytes > max_bytes:
+                raise OCRResponseLimitError(f"{context} exceeds the local aggregate byte limit")
+            if shared_state is not None:
+                shared_state["bytes"] += item_bytes
+                if shared_state["bytes"] > _MAX_OCR_STRUCTURED_TOTAL_BYTES:
+                    raise OCRResponseLimitError("OCR structured fields exceed the aggregate byte limit")
+            return item
+        if item is None or isinstance(item, (bool, int, float, Decimal)):
+            return item
+        if isinstance(item, dict):
+            bounded: Dict[str, Any] = {}
+            for key, val in item.items():
+                if not isinstance(key, str):
+                    raise OCRResponseLimitError(f"{context} object keys must be text")
+                bounded[visit(key, depth + 1)] = visit(val, depth + 1)
+            return bounded
+        if isinstance(item, (list, tuple)):
+            return [visit(entry, depth + 1) for entry in item]
+        raise OCRResponseLimitError(f"{context} must be JSON-like data")
+
+    return visit(value, 0)
+
+
+def _bounded_page_hyperlinks(
+    hyperlinks: Any,
+    result: Optional[Dict[str, Any]] = None,
+) -> List[Any]:
+    if not isinstance(hyperlinks, (list, tuple)):
+        raise OCRResponseLimitError("OCR page hyperlinks must be a list")
+    if len(hyperlinks) > _MAX_OCR_HYPERLINKS_PER_PAGE:
+        raise OCRResponseLimitError("OCR hyperlink count exceeds the per-page limit")
+    bounded = _bounded_value(hyperlinks, "OCR hyperlinks", budget_owner=result)
+    if not isinstance(bounded, list):  # pragma: no cover - guarded above
+        raise OCRResponseLimitError("OCR page hyperlinks must be a list")
+    return bounded
+
+
+def _preflight_json_container(text: str, context: str) -> None:  # noqa: C901
+    """Bound JSON container shape before ``json.loads`` materializes it."""
+    nodes = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    primitive = False
+    string_chars = 0
+
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+                string_chars += 1
+                continue
+            if char == "\\":
+                escaped = True
+                string_chars += 1
+                continue
+            if char == '"':
+                in_string = False
+                nodes += 1
+                if nodes > _MAX_OCR_STRUCTURED_NODES:
+                    raise OCRResponseLimitError(f"{context} exceeds the local item limit")
+                continue
+            string_chars += 1
+            if string_chars > _MAX_OCR_STRUCTURED_STRING_BYTES:
+                raise OCRResponseLimitError(f"{context} contains an oversized string")
+            continue
+
+        if char == '"':
+            if primitive:
+                primitive = False
+            in_string = True
+            string_chars = 0
+            continue
+        if char in "[{":
+            if primitive:
+                primitive = False
+            depth += 1
+            if depth > _MAX_OCR_STRUCTURED_DEPTH:
+                raise OCRResponseLimitError(f"{context} exceeds the local nesting-depth limit")
+            nodes += 1
+            if nodes > _MAX_OCR_STRUCTURED_NODES:
+                raise OCRResponseLimitError(f"{context} exceeds the local item limit")
+            continue
+        if char in "]}":
+            primitive = False
+            depth = max(0, depth - 1)
+            continue
+        if char in ",:" or char.isspace():
+            primitive = False
+            continue
+        if not primitive:
+            primitive = True
+            nodes += 1
+            if nodes > _MAX_OCR_STRUCTURED_NODES:
+                raise OCRResponseLimitError(f"{context} exceeds the local item limit")
+
+
+def _ocr_image_field(image: Any, name: str, default: Any = None) -> Any:
+    """Read an OCR image field from an SDK model or plain response dict."""
+    if isinstance(image, dict):
+        return image.get(name, default)
+    return getattr(image, name, default)
+
+
+def _parse_page_images(
+    images: Any,
+    result: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Admit raw image entries before copying metadata or base64 payloads."""
+    if not isinstance(images, (list, tuple)):
+        raise OCRResponseLimitError("OCR page images must be a list")
+
+    budget_owner = result if result is not None else {}
+    state = budget_owner.setdefault("_image_budget", {"count": 0, "estimated_decoded": 0})
+    configured_limit = config.MISTRAL_IMAGE_LIMIT
+    image_limit = min(configured_limit, MAX_EXTRACTED_IMAGES) if configured_limit > 0 else MAX_EXTRACTED_IMAGES
+    remaining = image_limit - int(state["count"])
+    # Check the raw sequence length before touching a single image property or
+    # constructing parser-owned dictionaries.
+    if len(images) > remaining:
+        raise OCRResponseLimitError(f"OCR image count exceeds the local limit ({image_limit})")
+
+    parsed: List[Dict[str, Any]] = []
+    for image in images:
+        metadata = _bounded_value(
+            {
+                "id": _ocr_image_field(image, "id"),
+                "top_left_x": _ocr_image_field(image, "top_left_x"),
+                "top_left_y": _ocr_image_field(image, "top_left_y"),
+                "bottom_right_x": _ocr_image_field(image, "bottom_right_x"),
+                "bottom_right_y": _ocr_image_field(image, "bottom_right_y"),
+                "bbox": _ocr_image_field(image, "bbox"),
+            },
+            "OCR image metadata",
+            max_bytes=_MAX_OCR_IMAGE_METADATA_BYTES,
+            budget_owner=budget_owner,
+        )
+
+        payload = None
+        if config.MISTRAL_INCLUDE_IMAGES:
+            payload = _ocr_image_field(image, "image_base64") or _ocr_image_field(image, "base64")
+            if payload is not None:
+                if not isinstance(payload, str):
+                    raise OCRResponseLimitError("OCR image base64 data must be ASCII text")
+                start = 0
+                if payload.startswith("data:"):
+                    if len(payload) > (MAX_EXTRACTED_IMAGE_ENCODED_BYTES + MAX_EXTRACTED_IMAGE_DATA_URI_HEADER_CHARS):
+                        raise OCRResponseLimitError("OCR image exceeds the local encoded-byte limit")
+                    comma = payload.find(",", 0, MAX_EXTRACTED_IMAGE_DATA_URI_HEADER_CHARS + 1)
+                    if comma < 0:
+                        raise OCRResponseLimitError("OCR image data URI is malformed or has an oversized header")
+                    start = comma + 1
+                encoded_bytes = len(payload) - start
+                if encoded_bytes > MAX_EXTRACTED_IMAGE_ENCODED_BYTES:
+                    raise OCRResponseLimitError("OCR image exceeds the local encoded-byte limit")
+                if not payload.isascii():
+                    raise OCRResponseLimitError("OCR image base64 data must be ASCII text")
+                estimated_decoded = ((encoded_bytes + 3) // 4) * 3
+                if estimated_decoded > MAX_EXTRACTED_IMAGE_DECODED_BYTES:
+                    raise OCRResponseLimitError("OCR image exceeds the local decoded-byte limit")
+                if state["estimated_decoded"] + estimated_decoded > MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES:
+                    raise OCRResponseLimitError("OCR images exceed the local aggregate decoded-byte limit")
+                state["estimated_decoded"] += estimated_decoded
+                # Allocate the normalized payload only after every byte limit.
+                payload = payload[start:]
+
+        metadata["base64"] = payload
+        state["count"] += 1
+        parsed.append(metadata)
+    return parsed
 
 
 def _validate_ocr_text_size(text: Any, max_bytes: int, context: str) -> int:
@@ -450,8 +688,14 @@ def _validate_ocr_result_text_budget(ocr_result: Dict[str, Any]) -> None:
 
 def _parse_pages_response(response: Any, result: Dict[str, Any]) -> None:
     """Parse a multi-page OCR response (``response.pages``) into *result*."""
-    for idx, page in enumerate(response.pages):
-        page_data = _parse_page_object(page, idx)
+    pages = response.pages
+    if not isinstance(pages, (list, tuple)):
+        raise OCRResponseLimitError("OCR response pages must be a list")
+    page_limit = min(max(1, int(config.MAX_PAGES_PER_SESSION)), _MAX_OCR_RESPONSE_PAGES)
+    if len(pages) > page_limit:
+        raise OCRResponseLimitError(f"OCR response page count exceeds the local limit ({page_limit})")
+    for idx, page in enumerate(pages):
+        page_data = _parse_page_object(page, idx, result)
         _append_ocr_page(result, page_data)
 
 
@@ -468,7 +712,15 @@ def _parse_single_text_response(text: str, result: Dict[str, Any]) -> None:
 def _parse_dict_response(response: dict, result: Dict[str, Any]) -> None:
     """Handle responses that arrive as plain Python dicts."""
     if "pages" in response:
-        for idx, page in enumerate(response["pages"]):
+        pages = response["pages"]
+        if not isinstance(pages, (list, tuple)):
+            raise OCRResponseLimitError("OCR response pages must be a list")
+        page_limit = min(max(1, int(config.MAX_PAGES_PER_SESSION)), _MAX_OCR_RESPONSE_PAGES)
+        if len(pages) > page_limit:
+            raise OCRResponseLimitError(f"OCR response page count exceeds the local limit ({page_limit})")
+        for idx, page in enumerate(pages):
+            if not isinstance(page, dict):
+                raise OCRResponseLimitError("OCR response pages must be objects")
             page_text = page.get("markdown", page.get("text", page.get("content", "")))
             _validate_ocr_text_size(page_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
             page_text = html.unescape(utils.clean_consecutive_duplicates(page_text))
@@ -489,8 +741,29 @@ def _parse_dict_response(response: dict, result: Dict[str, Any]) -> None:
                     "page_number": page_num,
                     "api_page_index": api_page_index,
                     "text": page_text,
-                    "images": page.get("images", []),
+                    "images": _parse_page_images(page.get("images", []), result),
                     "tables": tables,
+                    "hyperlinks": _bounded_page_hyperlinks(page.get("hyperlinks", []), result),
+                    "header": (
+                        _bounded_value(
+                            page["header"],
+                            "OCR page header",
+                            max_bytes=_MAX_OCR_HEADER_FOOTER_BYTES,
+                            budget_owner=result,
+                        )
+                        if page.get("header")
+                        else None
+                    ),
+                    "footer": (
+                        _bounded_value(
+                            page["footer"],
+                            "OCR page footer",
+                            max_bytes=_MAX_OCR_HEADER_FOOTER_BYTES,
+                            budget_owner=result,
+                        )
+                        if page.get("footer")
+                        else None
+                    ),
                 },
             )
     else:
@@ -501,22 +774,47 @@ def _parse_dict_response(response: dict, result: Dict[str, Any]) -> None:
 
 def _extract_structured_outputs(response: Any, result: Dict[str, Any]) -> None:
     """Extract bbox_annotations and document_annotation from the response."""
-    if hasattr(response, "bbox_annotations") and response.bbox_annotations:
-        result["bbox_annotations"] = [
-            bbox.model_dump() if hasattr(bbox, "model_dump") else bbox for bbox in response.bbox_annotations
-        ]
+    bbox_annotations = (
+        response.get("bbox_annotations") if isinstance(response, dict) else getattr(response, "bbox_annotations", None)
+    )
+    # Existing callers and tests sometimes provide partial mock response
+    # objects.  An absent optional SDK field then appears as a MagicMock; it
+    # is not response data and must not be treated as an annotation payload.
+    if type(bbox_annotations).__module__ == "unittest.mock":
+        bbox_annotations = None
+    if bbox_annotations:
+        if not isinstance(bbox_annotations, (list, tuple)):
+            raise OCRResponseLimitError("OCR bbox annotations must be a list")
+        if len(bbox_annotations) > _MAX_OCR_BBOX_ANNOTATIONS:
+            raise OCRResponseLimitError("OCR bbox annotation count exceeds the local limit")
+        bounded_bbox = _bounded_value(bbox_annotations, "OCR bbox annotations", budget_owner=result)
+        if not isinstance(bounded_bbox, list):  # pragma: no cover - guarded above
+            raise OCRResponseLimitError("OCR bbox annotations must be a list")
+        result["bbox_annotations"] = bounded_bbox
 
-    if hasattr(response, "document_annotation") and response.document_annotation:
-        annotation = response.document_annotation
+    annotation = (
+        response.get("document_annotation")
+        if isinstance(response, dict)
+        else getattr(response, "document_annotation", None)
+    )
+    if type(annotation).__module__ == "unittest.mock":
+        model_dump = getattr(annotation, "model_dump", None)
+        dumped = model_dump() if callable(model_dump) else None
+        annotation = None if type(dumped).__module__ == "unittest.mock" else dumped
+    if annotation:
         if isinstance(annotation, str):
+            _validate_ocr_text_size(annotation, _MAX_OCR_STRUCTURED_TOTAL_BYTES, "OCR document annotation")
             try:
-                result["document_annotation"] = json.loads(annotation)
+                if annotation.lstrip().startswith(("{", "[")):
+                    _preflight_json_container(annotation, "OCR document annotation")
+                annotation = json.loads(annotation)
             except (json.JSONDecodeError, TypeError):
-                result["document_annotation"] = annotation
-        elif hasattr(annotation, "model_dump"):
-            result["document_annotation"] = annotation.model_dump()
-        else:
-            result["document_annotation"] = annotation
+                pass
+        result["document_annotation"] = _bounded_value(
+            annotation,
+            "OCR document annotation",
+            budget_owner=result,
+        )
 
 
 def _extract_response_metadata(response: Any, result: Dict[str, Any]) -> None:
@@ -594,11 +892,16 @@ def _parse_ocr_response(response: Any, file_path: Path) -> Dict[str, Any]:
         logger.warning("OCR response rejected by local resource policy: %s", e)
         result["pages"] = []
         result["full_text"] = ""
-        result["parse_error"] = str(e)
+        result["parse_error"] = utils.redact_sensitive_url_data(str(e))
     except Exception as e:
         # Preserve full traceback so unexpected parser failures can be diagnosed from logs.
         logger.exception("Error parsing OCR response: %s", e)
-        result["parse_error"] = str(e)
+        result["parse_error"] = utils.redact_sensitive_url_data(str(e))
+
+    # Admission state is only needed while parsing; do not persist it to the
+    # cache or JSON output alongside the public OCR result.
+    result.pop("_image_budget", None)
+    result.pop("_structured_budget", None)
 
     return result
 

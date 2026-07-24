@@ -22,6 +22,7 @@ import io
 import queue
 import sys
 import threading
+import zipfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -656,7 +657,7 @@ class TestConvertPdfToImages:
         monkeypatch.setattr(config, "POPPLER_PATH", "")
         monkeypatch.setattr(config, "PDF_IMAGE_THREAD_COUNT", 1)
         monkeypatch.setattr(config, "PDF_IMAGE_USE_PDFTOCAIRO", False)
-        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 2)
 
         pdf_file = tmp_path / "test.pdf"
         pdf_file.write_bytes(b"%PDF-1.4")
@@ -702,7 +703,7 @@ class TestConvertPdfToImages:
         assert error is not None and "Cannot determine PDF page count" in error
         mock_convert.assert_not_called()
 
-    def test_known_page_count_renders_without_last_page_truncation(self, tmp_path, monkeypatch):
+    def test_known_page_count_is_passed_to_poppler_as_a_hard_limit(self, tmp_path, monkeypatch):
         output_dir = tmp_path / "known_pages"
         output_dir.mkdir()
         pdf_file = tmp_path / "known.pdf"
@@ -724,7 +725,23 @@ class TestConvertPdfToImages:
         assert success is True
         assert error is None
         assert paths == [output_dir / "page_001.png"]
-        assert "last_page" not in mock_convert.call_args.kwargs
+        assert mock_convert.call_args.kwargs["first_page"] == 1
+        assert mock_convert.call_args.kwargs["last_page"] == 1
+
+    def test_second_page_count_cannot_raise_the_admitted_render_cap(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "swapped_pages"
+        pdf_file = tmp_path / "swapped.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 5)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", MagicMock(side_effect=[1, 1_000]))
+
+        with patch.object(local_converter, "convert_from_path") as convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is False
+        assert paths == []
+        assert "too many pages" in (error or "").lower()
+        convert.assert_not_called()
 
     def test_render_uses_preflight_page_count_without_reanalyzing(self, tmp_path, monkeypatch):
         output_dir = tmp_path / "preflight_pages"
@@ -1768,6 +1785,48 @@ class TestLocalConversionSecurityLimits:
         assert "positive" in error.lower()
         convert.assert_not_called()
 
+    def test_pdf_images_passes_admitted_page_range_to_poppler(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        output_dir = tmp_path / "pages"
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 2)
+        temp_paths = [output_dir / "page0001-1.png", output_dir / "page0001-2.png"]
+
+        def render(**_kwargs):
+            for path in temp_paths:
+                path.touch()
+            return [str(path) for path in temp_paths]
+
+        with patch.object(local_converter, "convert_from_path", side_effect=render) as convert:
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is True
+        assert error is None
+        assert len(paths) == 2
+        assert convert.call_args.kwargs["first_page"] == 1
+        assert convert.call_args.kwargs["last_page"] == 2
+
+    def test_pdf_images_rejects_render_count_disagreement_and_cleans_only_its_artifacts(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "report.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        output_dir = tmp_path / "pages"
+        output_dir.mkdir()
+        unrelated = output_dir / "unrelated.png"
+        unrelated.touch()
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 2)
+        temp_paths = [output_dir / f"page0001-{index}.png" for index in range(1, 4)]
+        for path in temp_paths:
+            path.touch()
+
+        with patch.object(local_converter, "convert_from_path", return_value=[str(path) for path in temp_paths]):
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is False
+        assert paths == []
+        assert "disagreed" in error.lower()
+        assert unrelated.exists()
+        assert not any(path.exists() for path in temp_paths)
+
     def test_csv_formula_cells_are_neutralized_without_changing_benign_values(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
         monkeypatch.setattr(config, "TABLE_OUTPUT_FORMATS", ["csv"])
@@ -1783,6 +1842,85 @@ class TestLocalConversionSecurityLimits:
         assert local_converter._neutralize_csv_formula("  ordinary text") == "  ordinary text"
         assert local_converter._neutralize_csv_formula("\t@cmd") == "'\t@cmd"
         assert local_converter._neutralize_csv_formula("\r-formula") == "'\r-formula"
+
+    def test_formula_cells_with_bom_or_fullwidth_equals_are_neutralized_in_csv_and_markdown(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
+        monkeypatch.setattr(config, "TABLE_OUTPUT_FORMATS", ["csv", "markdown"])
+        monkeypatch.setattr(config, "INCLUDE_METADATA", False)
+        monkeypatch.setattr(config, "GENERATE_TXT_OUTPUT", False)
+        pdf_file = tmp_path / "report.pdf"
+        tables = [[["\ufeff=header", "＝SUM(A1)"], [" \ufeff\t+cmd", "ordinary"]]]
+
+        local_converter.save_tables_to_files(pdf_file, tables)
+
+        csv_content = next(tmp_path.glob("*.csv")).read_text(encoding="utf-8")
+        markdown_content = next(tmp_path.glob("*_tables_all.md")).read_text(encoding="utf-8")
+        for content in (csv_content, markdown_content):
+            assert "'\ufeff=header" in content
+            assert "'＝SUM(A1)" in content
+            assert "'\ufeff +cmd" in content
+            assert "ordinary" in content
+        assert local_converter._neutralize_csv_formula("\ufeff ordinary") == "\ufeff ordinary"
+        assert local_converter._neutralize_csv_formula("\ufeff \t+cmd") == "'\ufeff \t+cmd"
+
+    def test_ooxml_path_and_stream_are_preflighted_before_markitdown(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
+        monkeypatch.setattr(config, "GENERATE_TXT_OUTPUT", False)
+        valid_docx = tmp_path / "valid.docx"
+        with zipfile.ZipFile(valid_docx, "w") as package:
+            package.writestr("[Content_Types].xml", "<Types />")
+            package.writestr("word/document.xml", "<document />")
+        result = MagicMock(markdown="# converted")
+        md = MagicMock()
+        md.convert.return_value = result
+        md.convert_stream.return_value = result
+
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_with_markitdown(valid_docx)
+            assert success is True
+            assert error is None
+            success, _, error = local_converter.convert_stream_with_markitdown(
+                io.BytesIO(valid_docx.read_bytes()), "valid.docx"
+            )
+            assert success is True
+            assert error is None
+
+        malformed = tmp_path / "malformed.docx"
+        with zipfile.ZipFile(malformed, "w") as package:
+            package.writestr("word/document.xml", "<document />")
+        md = MagicMock()
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_with_markitdown(malformed)
+        assert success is False
+        assert "malformed" in error.lower()
+        md.convert.assert_not_called()
+
+    def test_ooxml_preflight_rejects_compression_bomb_before_markitdown(self, tmp_path, monkeypatch):
+        document = tmp_path / "bomb.xlsx"
+        with zipfile.ZipFile(document, "w", compression=zipfile.ZIP_DEFLATED) as package:
+            package.writestr("[Content_Types].xml", "<Types />")
+            package.writestr("xl/workbook.xml", "x" * 1024)
+        monkeypatch.setattr(local_converter, "_OOXML_MAX_MEMBER_BYTES", 100)
+        md = MagicMock()
+        with patch.object(local_converter, "get_markitdown_instance", return_value=md):
+            success, _, error = local_converter.convert_with_markitdown(document)
+        assert success is False
+        assert "limit" in error.lower()
+        md.convert.assert_not_called()
+
+    def test_oversized_ooxml_is_rejected_before_zip_preflight(self, tmp_path, monkeypatch):
+        document = tmp_path / "oversized.docx"
+        document.write_bytes(b"not opened")
+        monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 0)
+
+        with patch.object(local_converter, "_ooxml_rejection") as preflight:
+            success, content, error = local_converter.convert_with_markitdown(document)
+
+        assert (success, content) == (False, None)
+        assert "too large" in (error or "").lower()
+        preflight.assert_not_called()
 
 
 if __name__ == "__main__":

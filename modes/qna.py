@@ -19,26 +19,57 @@ import utils
 logger = utils.logger
 
 
+def _format_qna_answer_text(text: str, *, at_line_start: bool = True) -> Tuple[str, bool]:
+    """Make untrusted answer text readable without terminal line rewriting.
+
+    Every visible line receives a ``| `` prefix.  Carriage returns are rendered
+    literally, including when a stream splits a CR/LF pair across chunks.
+    """
+    safe_text = utils.sanitize_for_terminal(text).replace("\r", r"\r")
+    pieces = []
+    for part in safe_text.splitlines(keepends=True):
+        if at_line_start:
+            pieces.append("| ")
+        pieces.append(part)
+        at_line_start = part.endswith("\n")
+    if not safe_text and at_line_start:
+        return "", at_line_start
+    return "".join(pieces), at_line_start
+
+
 def _qna_print_stream(
     document_url: str,
     question: str,
     *,
     strict_dns: Optional[bool] = None,
+    trusted_uploaded_url: bool = False,
 ) -> Tuple[bool, str]:
     """Run streaming QnA and print to stdout; returns (ok, message)."""
-    success, stream, error = mistral_converter.query_document_stream(document_url, question, strict_dns=strict_dns)
+    if trusted_uploaded_url:
+        success, stream, error = mistral_converter._query_document_stream_impl(
+            document_url,
+            question,
+            strict_dns=strict_dns,
+            trusted_uploaded_url=True,
+        )
+    else:
+        success, stream, error = mistral_converter.query_document_stream(document_url, question, strict_dns=strict_dns)
     if success and stream is not None:
-        utils.ui_print("\nAnswer: ", end="", flush=True)
+        utils.ui_print("\nAnswer:\n", end="", flush=True)
         emitted_any = False
+        at_line_start = True
         try:
             for chunk in stream:
                 if chunk.data.choices and chunk.data.choices[0].delta.content:
                     emitted_any = True
-                    safe_text = utils.sanitize_for_terminal(chunk.data.choices[0].delta.content)
+                    safe_text, at_line_start = _format_qna_answer_text(
+                        chunk.data.choices[0].delta.content, at_line_start=at_line_start
+                    )
                     utils.ui_print(safe_text, end="", flush=True)
         except Exception as e:
-            utils.ui_print(f"\n\nStream error: {e}")
-            return False, f"QnA stream failed: {e}"
+            safe_error = utils.redact_sensitive_url_data(str(e))
+            utils.ui_print(f"\n\nStream error: {safe_error}")
+            return False, f"QnA stream failed: {safe_error}"
         utils.ui_print("\n")
         if not emitted_any:
             return False, "QnA stream returned no answer content"
@@ -51,12 +82,22 @@ def _qna_print_complete(
     question: str,
     *,
     strict_dns: Optional[bool] = None,
+    trusted_uploaded_url: bool = False,
 ) -> Tuple[bool, str]:
     """Run non-streaming QnA and print the full answer."""
-    success, answer, error = mistral_converter.query_document(document_url, question, strict_dns=strict_dns)
+    if trusted_uploaded_url:
+        success, answer, error = mistral_converter._query_document_impl(
+            document_url,
+            question,
+            strict_dns=strict_dns,
+            trusted_uploaded_url=True,
+        )
+    else:
+        success, answer, error = mistral_converter.query_document(document_url, question, strict_dns=strict_dns)
     if success and answer:
         utils.ui_print("\nAnswer:\n")
-        utils.ui_print(utils.sanitize_for_terminal(answer))
+        safe_answer, _ = _format_qna_answer_text(answer)
+        utils.ui_print(safe_answer)
         utils.ui_print("\n")
         return True, "ok"
     return False, error or "QnA failed"
@@ -75,8 +116,6 @@ def mode_document_qna(
 
     if not config.MISTRAL_API_KEY:
         return False, "Document QnA requires MISTRAL_API_KEY to be set"
-
-    mistral_converter.reset_session_page_counter()
 
     url_mode = bool((qna_document_url or "").strip())
     if url_mode:
@@ -136,9 +175,6 @@ def mode_document_qna(
         upload_started_at = time.time()
         return signed_url
 
-    if not _get_document_url():
-        return False, (f"Failed to upload {file_path.name} for QnA" if file_path else "No document URL available")
-
     utils.ui_print(f"\nQuerying: {display_name}")
     utils.ui_print(f"Model: {config.MISTRAL_DOCUMENT_QNA_MODEL}")
 
@@ -146,12 +182,19 @@ def mode_document_qna(
         """Ask a QnA question, retrying once with a fresh URL on expiry-related errors."""
         document_url = _get_document_url()
         if not document_url:
-            return False, "Failed to resolve document URL for QnA"
+            return False, (
+                f"Failed to upload {file_path.name} for QnA" if file_path else "Failed to resolve document URL for QnA"
+            )
         # Uploaded-file signed URLs may not resolve via local DNS; user URLs keep
         # the fail-closed default (None -> config.MISTRAL_DOCUMENT_URL_STRICT_DNS).
         strict_dns = None if url_mode else False
         qna_fn = _qna_print_stream if use_stream else _qna_print_complete
-        ok, msg = qna_fn(document_url, question, strict_dns=strict_dns)
+        ok, msg = qna_fn(
+            document_url,
+            question,
+            strict_dns=strict_dns,
+            trusted_uploaded_url=not url_mode,
+        )
         if ok:
             return True, msg
         # Only retry once when the error looks like a signed-URL expiry (403
@@ -164,7 +207,12 @@ def mode_document_qna(
             upload_started_at = 0.0
             document_url = _get_document_url()
             if document_url:
-                ok, msg = qna_fn(document_url, question, strict_dns=strict_dns)
+                ok, msg = qna_fn(
+                    document_url,
+                    question,
+                    strict_dns=strict_dns,
+                    trusted_uploaded_url=not url_mode,
+                )
         return ok, msg
 
     if non_interactive:
@@ -201,4 +249,6 @@ def mode_document_qna(
             False,
             f"Asked {questions_asked} question(s) successfully; {questions_failed} failed about {label}",
         )
+    if not questions_asked:
+        return False, f"No questions were asked about {label}"
     return True, f"Asked {questions_asked} question(s) about {label}"

@@ -102,6 +102,22 @@ class TestValidateDocumentUrl:
         ok, err = url_module._validate_document_url("https://169.254.1.1/")
         assert ok is False
 
+    def test_rejects_shared_cgnat_ipv4_literal(self):
+        ok, err = url_module._validate_document_url("https://100.64.0.1/doc.pdf")
+        assert ok is False
+        assert "private" in (err or "").lower() or "internal" in (err or "").lower()
+
+    def test_rejects_shared_cgnat_dns_result(self):
+        with patch.object(url_module, "_resolve_dns_in_subprocess", return_value=["100.127.255.254"]):
+            ok, err = url_module._validate_document_url("https://example.com/doc.pdf")
+        assert ok is False
+        assert "private" in (err or "").lower() or "internal" in (err or "").lower()
+
+    def test_rejects_ipv4_mapped_shared_cgnat_address(self):
+        ok, err = url_module._validate_document_url("https://[::ffff:100.64.0.1]/doc.pdf")
+        assert ok is False
+        assert "private" in (err or "").lower() or "internal" in (err or "").lower()
+
     def test_lenient_dns_allows_when_resolve_fails(self, monkeypatch):
         import socket
 
@@ -374,7 +390,13 @@ class TestIsSignedUrlExpiryError:
         assert mistral_converter.is_signed_url_expiry_error("The signed URL has expired") is True
         assert mistral_converter.is_signed_url_expiry_error("403 Forbidden") is False
         assert mistral_converter.is_signed_url_expiry_error("403 Forbidden: signed URL has expired") is True
-        assert mistral_converter.is_signed_url_expiry_error("Failed to fetch document from URL") is True
+        assert mistral_converter.is_signed_url_expiry_error("Failed to fetch document from URL") is False
+        assert (
+            mistral_converter.is_signed_url_expiry_error(
+                "Failed to fetch document from URL: 403 Forbidden (Request has expired)"
+            )
+            is True
+        )
         assert mistral_converter.is_signed_url_expiry_error("Signature mismatch") is True
         assert mistral_converter.is_signed_url_expiry_error("Access denied") is False
 
