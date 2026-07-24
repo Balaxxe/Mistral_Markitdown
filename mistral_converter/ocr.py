@@ -225,8 +225,13 @@ def process_with_ocr(  # noqa: C901
                     reserved_pages,
                     file_path.name,
                 )
-            committed = _commit_session_pages(reserved_pages, actual_pages)
+            # Transfer ownership before invoking commit.  A committing
+            # implementation owns the reservation even if it raises; keeping
+            # credit in that exceptional case fails closed rather than
+            # releasing another worker's later reservation from ``finally``.
+            pages_to_commit = reserved_pages
             reserved_pages = 0
+            committed = _commit_session_pages(pages_to_commit, actual_pages)
             if not committed:
                 return (
                     False,

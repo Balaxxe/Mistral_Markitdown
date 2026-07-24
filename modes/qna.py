@@ -42,9 +42,18 @@ def _qna_print_stream(
     question: str,
     *,
     strict_dns: Optional[bool] = None,
+    trusted_uploaded_url: bool = False,
 ) -> Tuple[bool, str]:
     """Run streaming QnA and print to stdout; returns (ok, message)."""
-    success, stream, error = mistral_converter.query_document_stream(document_url, question, strict_dns=strict_dns)
+    if trusted_uploaded_url:
+        success, stream, error = mistral_converter._query_document_stream_impl(
+            document_url,
+            question,
+            strict_dns=strict_dns,
+            trusted_uploaded_url=True,
+        )
+    else:
+        success, stream, error = mistral_converter.query_document_stream(document_url, question, strict_dns=strict_dns)
     if success and stream is not None:
         utils.ui_print("\nAnswer:\n", end="", flush=True)
         emitted_any = False
@@ -73,9 +82,18 @@ def _qna_print_complete(
     question: str,
     *,
     strict_dns: Optional[bool] = None,
+    trusted_uploaded_url: bool = False,
 ) -> Tuple[bool, str]:
     """Run non-streaming QnA and print the full answer."""
-    success, answer, error = mistral_converter.query_document(document_url, question, strict_dns=strict_dns)
+    if trusted_uploaded_url:
+        success, answer, error = mistral_converter._query_document_impl(
+            document_url,
+            question,
+            strict_dns=strict_dns,
+            trusted_uploaded_url=True,
+        )
+    else:
+        success, answer, error = mistral_converter.query_document(document_url, question, strict_dns=strict_dns)
     if success and answer:
         utils.ui_print("\nAnswer:\n")
         safe_answer, _ = _format_qna_answer_text(answer)
@@ -171,7 +189,12 @@ def mode_document_qna(
         # the fail-closed default (None -> config.MISTRAL_DOCUMENT_URL_STRICT_DNS).
         strict_dns = None if url_mode else False
         qna_fn = _qna_print_stream if use_stream else _qna_print_complete
-        ok, msg = qna_fn(document_url, question, strict_dns=strict_dns)
+        ok, msg = qna_fn(
+            document_url,
+            question,
+            strict_dns=strict_dns,
+            trusted_uploaded_url=not url_mode,
+        )
         if ok:
             return True, msg
         # Only retry once when the error looks like a signed-URL expiry (403
@@ -184,7 +207,12 @@ def mode_document_qna(
             upload_started_at = 0.0
             document_url = _get_document_url()
             if document_url:
-                ok, msg = qna_fn(document_url, question, strict_dns=strict_dns)
+                ok, msg = qna_fn(
+                    document_url,
+                    question,
+                    strict_dns=strict_dns,
+                    trusted_uploaded_url=not url_mode,
+                )
         return ok, msg
 
     if non_interactive:

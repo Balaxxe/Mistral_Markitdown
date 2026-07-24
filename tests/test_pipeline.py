@@ -754,12 +754,54 @@ class TestModeDocumentQna:
         with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.get_mistral_client.return_value = MagicMock()
             mock_mc.upload_file_for_ocr.return_value = "https://example.com/doc"
-            mock_mc.query_document_stream.return_value = (True, _fake_stream(), None)
+            mock_mc._query_document_stream_impl.return_value = (True, _fake_stream(), None)
             success, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
-            mock_mc.query_document_stream.assert_called_once()
-            assert mock_mc.query_document_stream.call_args.kwargs.get("strict_dns") is False
+            mock_mc._query_document_stream_impl.assert_called_once()
+            assert mock_mc._query_document_stream_impl.call_args.kwargs.get("strict_dns") is False
+            assert mock_mc._query_document_stream_impl.call_args.kwargs.get("trusted_uploaded_url") is True
         assert success is True
         assert "1 question" in msg
+
+    @pytest.mark.parametrize("use_stream", [True, False])
+    def test_uploaded_qna_allows_own_signed_url_with_custom_server(self, tmp_path, monkeypatch, use_stream):
+        """The CLI's upload flow must retain its trusted-upload provenance."""
+        monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
+        monkeypatch.setattr(config, "MISTRAL_SERVER_URL", "https://private-api.example")
+        monkeypatch.setattr(config, "MISTRAL_QNA_ALLOW_URL_WITH_CUSTOM_SERVER", False, raising=False)
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        mock_client = MagicMock()
+
+        if use_stream:
+            chunk = MagicMock()
+            chunk.data.choices = [MagicMock()]
+            chunk.data.choices[0].delta.content = "answer"
+
+            def _fake_stream():
+                yield chunk
+
+            mock_client.chat.stream.return_value = _fake_stream()
+        else:
+            choice = MagicMock()
+            choice.message.content = "answer"
+            mock_client.chat.complete.return_value = MagicMock(choices=[choice])
+
+        monkeypatch.setattr(mistral_converter, "get_mistral_client", lambda: mock_client)
+        monkeypatch.setattr(mistral_converter, "upload_file_for_ocr", lambda *_: "https://signed.example/doc")
+
+        success, message = main.mode_document_qna(
+            [pdf],
+            non_interactive=True,
+            initial_question="What is this?",
+            qna_use_stream=use_stream,
+        )
+
+        assert success is True
+        assert "1 question" in message
+        if use_stream:
+            mock_client.chat.stream.assert_called_once()
+        else:
+            mock_client.chat.complete.assert_called_once()
 
     def test_non_interactive_empty_stream_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")
@@ -773,7 +815,7 @@ class TestModeDocumentQna:
         with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.get_mistral_client.return_value = MagicMock()
             mock_mc.upload_file_for_ocr.return_value = "https://example.com/doc"
-            mock_mc.query_document_stream.return_value = (True, _empty_stream(), None)
+            mock_mc._query_document_stream_impl.return_value = (True, _empty_stream(), None)
             mock_mc.is_signed_url_expiry_error.return_value = False
             success, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
         assert success is False
@@ -810,7 +852,7 @@ class TestModeDocumentQna:
         with _patch_mistral_converter_everywhere() as mock_mc:
             mock_mc.get_mistral_client.return_value = MagicMock()
             mock_mc.upload_file_for_ocr.return_value = "https://example.com/doc"
-            mock_mc.query_document_stream.return_value = (True, _bad_stream(), None)
+            mock_mc._query_document_stream_impl.return_value = (True, _bad_stream(), None)
             # A random stream error is not a signed-URL expiry; do not retry.
             mock_mc.is_signed_url_expiry_error.return_value = False
             success, msg = main.mode_document_qna([pdf], non_interactive=True, initial_question="What is this?")
@@ -1944,7 +1986,7 @@ class TestModeDocumentQnaExpanded:
             ):
                 with patch.object(
                     mistral_converter,
-                    "query_document_stream",
+                    "_query_document_stream_impl",
                     return_value=(True, [mock_chunk], None),
                 ):
                     with patch("builtins.input", side_effect=inputs):
@@ -1972,7 +2014,7 @@ class TestModeDocumentQnaExpanded:
             ):
                 with patch.object(
                     mistral_converter,
-                    "query_document_stream",
+                    "_query_document_stream_impl",
                     return_value=(False, None, "API error"),
                 ):
                     with patch("builtins.input", side_effect=inputs):
@@ -2047,7 +2089,7 @@ class TestModeDocumentQnaExpanded:
             ):
                 with patch.object(
                     mistral_converter,
-                    "query_document_stream",
+                    "_query_document_stream_impl",
                     return_value=(True, bad_stream(), None),
                 ):
                     with patch("builtins.input", side_effect=inputs):

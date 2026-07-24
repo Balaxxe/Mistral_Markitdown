@@ -454,6 +454,45 @@ class TestSessionPageReservations:
         mistral_converter._release_session_pages_reservation(10)
         assert mistral_converter._session_pages_inflight == 0
 
+    def test_ocr_commit_exception_does_not_release_a_later_reservation(self, monkeypatch, tmp_path):
+        """An OCR commit exception cannot make ``finally`` release another worker's credit."""
+        import mistral_converter.ocr as ocr_module
+
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 4)
+        mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
+        mistral_converter.reset_session_page_counter()
+        document = tmp_path / "document.pdf"
+        document.write_bytes(b"%PDF")
+        client = MagicMock()
+        client.ocr.process.return_value = object()
+        real_commit = ocr_module._commit_session_pages
+
+        def commit_then_reserve_and_raise(reserved, actual):
+            assert real_commit(reserved, actual) is True
+            assert mistral_converter._reserve_session_pages(2) is True
+            raise RuntimeError("commit failed after consuming reservation")
+
+        try:
+            with (
+                patch.object(ocr_module, "_estimate_session_pages_for_ocr", return_value=2),
+                patch.object(ocr_module, "_prepare_ocr_document", return_value=({}, "https://signed.example/doc")),
+                patch.object(
+                    ocr_module,
+                    "_parse_ocr_response",
+                    return_value={"full_text": "processed", "pages": [{}, {}]},
+                ),
+                patch.object(ocr_module, "_commit_session_pages", side_effect=commit_then_reserve_and_raise),
+            ):
+                ok, result, error = mistral_converter.process_with_ocr(client, document)
+
+            assert (ok, result) == (False, None)
+            assert "commit failed" in (error or "")
+            assert mistral_converter._session_pages_processed == 2
+            assert mistral_converter._session_pages_inflight == 2
+        finally:
+            mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
+            mistral_converter.reset_session_page_counter()
+
     def test_concurrent_reservations_cannot_over_admit(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 10)
         mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)

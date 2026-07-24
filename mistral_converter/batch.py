@@ -210,9 +210,15 @@ def create_batch_ocr_file(  # noqa: C901
 
         # A submitted batch cannot provide an actual page count yet; commit the
         # conservative admission estimate once its JSONL is durably created.
-        if not attr("_commit_session_pages")(reserved_pages, reserved_pages):
-            raise RuntimeError("Batch page estimate could not be committed to the session budget")
+        # Transfer ownership before invoking commit.  The normal commit
+        # implementation consumes the inflight reservation even on failure;
+        # if a replacement raises before doing so, retaining that credit is
+        # safer than releasing another worker's later reservation.
+        pages_to_commit = reserved_pages
         reserved_pages = 0
+        committed = attr("_commit_session_pages")(pages_to_commit, pages_to_commit)
+        if not committed:
+            raise RuntimeError("Batch page estimate could not be committed to the session budget")
 
         omitted = len(file_paths) - len(entries)
         if omitted:

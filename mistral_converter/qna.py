@@ -193,7 +193,29 @@ def query_document_stream(
     Returns:
         Tuple of (success, event_stream_or_None, error_message)
     """
-    ok, client, params, err = _prepare_qna_call(document_url, question, model, strict_dns=strict_dns)
+    return _query_document_stream_impl(document_url, question, model, strict_dns=strict_dns)
+
+
+def _query_document_stream_impl(
+    document_url: str,
+    question: str,
+    model: Optional[str] = None,
+    strict_dns: Optional[bool] = None,
+    *,
+    trusted_uploaded_url: bool = False,
+) -> Tuple[bool, Optional[Any], Optional[str]]:
+    """Execute a streaming QnA request after applying URL policy.
+
+    ``trusted_uploaded_url`` is intentionally private: it is only for a URL
+    returned by this package's upload flow, never a caller-supplied URL.
+    """
+    ok, client, params, err = _prepare_qna_call(
+        document_url,
+        question,
+        model,
+        strict_dns=strict_dns,
+        trusted_uploaded_url=trusted_uploaded_url,
+    )
     if not ok or client is None or params is None:
         return False, None, err
 
