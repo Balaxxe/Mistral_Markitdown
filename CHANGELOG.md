@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-07-26
+
 ### Added
 
 - Parse-time budgets for OCR images, annotations, hyperlinks, headers, and footers; OOXML decompression preflight limits; and regression coverage for the security-review boundaries
