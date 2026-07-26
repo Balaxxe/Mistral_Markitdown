@@ -32,6 +32,7 @@ import config
 config.ensure_directories()
 
 import local_converter
+import utils
 
 # ============================================================================
 # _fix_merged_currency_cells Tests
@@ -268,11 +269,10 @@ class TestMarkItDownSingleton:
         assert local_converter._markitdown_instance is local_converter._MARKITDOWN_UNSET
 
     def test_get_instance_returns_value(self):
+        markitdown = pytest.importorskip("markitdown")
         local_converter.reset_markitdown_instance()
         instance = local_converter.get_markitdown_instance()
-        # It should return either a MarkItDown instance or None (if not installed)
-        # but not the sentinel
-        assert instance is not local_converter._MARKITDOWN_UNSET
+        assert isinstance(instance, markitdown.MarkItDown)
 
     def test_cached_on_second_call(self):
         local_converter.reset_markitdown_instance()
@@ -296,8 +296,10 @@ class TestMarkItDownSingleton:
         t1.join()
         t2.join()
 
-        if instances[0] is not None and instances[1] is not None:
-            assert instances[0] is not instances[1]
+        markitdown = pytest.importorskip("markitdown")
+        assert len(instances) == 2
+        assert all(isinstance(inst, markitdown.MarkItDown) for inst in instances)
+        assert instances[0] is not instances[1]
 
     def test_reset_invalidates_other_thread_cache(self):
         local_converter.reset_markitdown_instance()
@@ -413,6 +415,7 @@ class TestConvertWithMarkItDown:
         monkeypatch.setattr(config, "INCLUDE_METADATA", False)
         monkeypatch.setattr(config, "GENERATE_TXT_OUTPUT", False)
         monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+        monkeypatch.setattr(utils.logger, "propagate", True)
 
         test_file = tmp_path / "scan.png"
         test_file.write_bytes(b"\x89PNG")
@@ -642,6 +645,7 @@ class TestConvertPdfToImages:
     @pytest.fixture(autouse=True)
     def _disable_page_limit_for_legacy_mock_pdfs(self, monkeypatch):
         monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 0)
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", lambda *_a, **_k: 1_000)
 
     def test_not_installed(self, tmp_path):
         with patch.object(local_converter, "convert_from_path", None):
@@ -806,7 +810,8 @@ class TestExtractAllTables:
                 with patch.object(local_converter, "extract_tables_pdfplumber_text", return_value=[table2]):
                     result = local_converter.extract_all_tables(pdf_file)
 
-        assert result["table_count"] >= 1
+        assert result["table_count"] == 2
+        assert result["tables"] == [table1, table2]
         assert "pdfplumber" in result["methods_used"]
 
     def test_all_methods_fail_returns_empty(self, tmp_path):
@@ -1278,6 +1283,7 @@ class TestConvertPdfToImagesPng:
     @pytest.fixture(autouse=True)
     def _disable_page_limit_for_legacy_mock_pdfs(self, monkeypatch):
         monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 0)
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", lambda *_a, **_k: 1_000)
 
     def test_png_format(self, tmp_path, monkeypatch):
         output_dir = tmp_path / "png_pages"
@@ -1542,6 +1548,7 @@ class TestConvertPdfToImagesOtherFormat:
     @pytest.fixture(autouse=True)
     def _disable_page_limit_for_legacy_mock_pdfs(self, monkeypatch):
         monkeypatch.setattr(config, "PDF_IMAGE_MAX_PAGES", 0)
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", lambda *_a, **_k: 1_000)
 
     def test_tiff_format(self, tmp_path, monkeypatch):
         """Other format branch uses PDF_IMAGE_FORMAT.upper()."""
@@ -1619,6 +1626,129 @@ class TestLocalConversionSecurityLimits:
         assert success is False
         assert "too many pages" in error.lower()
         convert.assert_not_called()
+
+    def test_pdf_images_rejects_oversized_media_box_before_poppler(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "bomb.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", lambda *_a, **_k: 1_600_000_000)
+        with patch.object(local_converter, "convert_from_path") as convert:
+            success, _, error = local_converter.convert_pdf_to_images(pdf_file)
+        assert success is False
+        assert "pixels" in (error or "").lower()
+        assert str(config.PDF_IMAGE_MAX_PIXELS_PER_PAGE) in (error or "")
+        convert.assert_not_called()
+
+    def test_pdf_images_pixel_budget_of_zero_disables_the_check(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "unbounded.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        output_dir = tmp_path / "pages"
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_PIXELS_PER_PAGE", 0)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+
+        def exploding_geometry(*_args, **_kwargs):
+            raise AssertionError("geometry must not be read when the budget is disabled")
+
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", exploding_geometry)
+        rendered = output_dir / "page0001-1.png"
+
+        def render(**_kwargs):
+            rendered.touch()
+            return [str(rendered)]
+
+        with patch.object(local_converter, "convert_from_path", side_effect=render):
+            success, paths, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir)
+
+        assert success is True
+        assert error is None
+        assert paths == [output_dir / "page_001.png"]
+
+    def test_pdf_images_fail_closed_on_unreadable_page_geometry(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "broken-geometry.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+
+        def unreadable_geometry(*_args, **_kwargs):
+            raise ValueError("geometry unavailable")
+
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", unreadable_geometry)
+        with patch.object(local_converter, "convert_from_path") as convert:
+            success, _, error = local_converter.convert_pdf_to_images(pdf_file)
+
+        assert success is False
+        assert "Cannot determine PDF page geometry" in (error or "")
+        convert.assert_not_called()
+
+    def test_pdf_images_clamps_caller_supplied_dpi_to_the_configured_ceiling(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "hidpi.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        output_dir = tmp_path / "pages"
+        monkeypatch.setattr(config, "PDF_IMAGE_MAX_DPI", 600)
+        monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 1)
+        seen_dpi = []
+
+        def record_geometry(_path, dpi, _limit=None):
+            seen_dpi.append(dpi)
+            return 1_000
+
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", record_geometry)
+        rendered = output_dir / "page0001-1.png"
+
+        def render(**_kwargs):
+            rendered.touch()
+            return [str(rendered)]
+
+        with patch.object(local_converter, "convert_from_path", side_effect=render) as convert:
+            success, _, error = local_converter.convert_pdf_to_images(pdf_file, output_dir=output_dir, dpi=20_000)
+
+        assert success is True
+        assert error is None
+        assert convert.call_args.kwargs["dpi"] == 600
+        assert seen_dpi == [600]
+
+    def test_pdf_max_page_pixels_scales_by_dpi_only(self, tmp_path):
+        pdf_file = tmp_path / "geometry.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        small = MagicMock(width=72, height=72)
+        # Poppler ignores /UserUnit, so a declared scale must not inflate the estimate.
+        large = MagicMock(width=144, height=72)
+        large.page_obj.attrs = {"UserUnit": 10}
+        pdf = MagicMock()
+        pdf.pages = [small, large]
+        pdf.__enter__.return_value = pdf
+        pdf.__exit__.return_value = False
+
+        with patch.object(local_converter, "pdfplumber") as plumber:
+            plumber.open.return_value = pdf
+            assert local_converter._pdf_max_page_pixels(pdf_file, 144) == 144 * 72 * 4
+            assert local_converter._pdf_max_page_pixels(pdf_file, 72, page_limit=1) == 72 * 72
+
+    def test_pdf_max_page_pixels_admits_letter_page_declaring_user_unit(self, tmp_path):
+        """A US-Letter page with a large /UserUnit stays inside the default pixel cap."""
+        pdf_file = tmp_path / "userunit.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        page = MagicMock(width=612, height=792)
+        page.page_obj.attrs = {"UserUnit": 10}
+        pdf = MagicMock()
+        pdf.pages = [page]
+        pdf.__enter__.return_value = pdf
+        pdf.__exit__.return_value = False
+
+        with patch.object(local_converter, "pdfplumber") as plumber:
+            plumber.open.return_value = pdf
+            pixels = local_converter._pdf_max_page_pixels(pdf_file, 200)
+            error = local_converter._pdf_render_pixel_error(pdf_file, 200)
+
+        assert pixels < config.PDF_IMAGE_MAX_PIXELS_PER_PAGE
+        assert error is None
+
+    def test_pdf_max_page_pixels_fails_closed_without_pdfplumber(self, tmp_path, monkeypatch):
+        pdf_file = tmp_path / "geometry.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        monkeypatch.setattr(local_converter, "pdfplumber", None)
+
+        with pytest.raises(RuntimeError, match="pdfplumber"):
+            local_converter._pdf_max_page_pixels(pdf_file, 200)
 
     def test_stream_limit_wraps_nonseekable_input_as_seekable(self, monkeypatch):
         class NonSeekable:
@@ -1790,6 +1920,7 @@ class TestLocalConversionSecurityLimits:
         pdf_file.write_bytes(b"%PDF")
         output_dir = tmp_path / "pages"
         monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 2)
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", lambda *_a, **_k: 1_000)
         temp_paths = [output_dir / "page0001-1.png", output_dir / "page0001-2.png"]
 
         def render(**_kwargs):
@@ -1814,6 +1945,7 @@ class TestLocalConversionSecurityLimits:
         unrelated = output_dir / "unrelated.png"
         unrelated.touch()
         monkeypatch.setattr(local_converter, "_pdf_page_count", lambda _: 2)
+        monkeypatch.setattr(local_converter, "_pdf_max_page_pixels", lambda *_a, **_k: 1_000)
         temp_paths = [output_dir / f"page0001-{index}.png" for index in range(1, 4)]
         for path in temp_paths:
             path.touch()

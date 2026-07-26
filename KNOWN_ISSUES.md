@@ -63,6 +63,12 @@ Before Poppler runs, PDF to Images uses `pdfplumber` to determine the page count
 
 ---
 
+### PDF to Images can refuse a page that renders too many pixels
+
+Poppler allocates the whole raster before any Python code sees it, so page size is checked first. If the largest admitted page would render above `PDF_IMAGE_MAX_PIXELS_PER_PAGE` (default 178,956,970 pixels, measured as page area in points x `(dpi / 72)^2`, the way Poppler sizes its output), conversion fails with `PDF page renders too many pixels (<n> at <dpi> DPI)`. The DPI that reaches rendering is clamped into `[72, PDF_IMAGE_MAX_DPI]` and logged rather than refused; a `PDF_IMAGE_DPI` environment value outside the fixed range `[72, 600]` is a separate case and falls back to the default 200. If the page geometry cannot be read at all, conversion fails closed with `Cannot determine PDF page geometry`. Lower the DPI, split the PDF, or raise `PDF_IMAGE_MAX_PIXELS_PER_PAGE` deliberately (`0` turns the check off).
+
+---
+
 ### Audio/video transcription requires extra setup
 
 MarkItDown plugins for audio/video are not installed by default:

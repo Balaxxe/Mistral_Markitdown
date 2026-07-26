@@ -3,6 +3,9 @@ Tests for config.py module
 """
 
 import importlib
+import os
+import stat
+import sys
 import warnings
 
 import pytest
@@ -38,6 +41,25 @@ class TestDirectoryCreation:
         assert config.CACHE_DIR.exists()
         assert config.LOGS_DIR.exists()
         assert config.METADATA_DIR.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
+    def test_ensure_private_dir_tightens_every_created_level(self, tmp_path):
+        """Missing parents are created 0o700 too, and pre-existing ones are left alone."""
+        grandparent = tmp_path / "grandparent"
+        grandparent.mkdir(mode=0o755)
+        os.chmod(grandparent, 0o755)
+        parent = grandparent / "parent"
+        leaf = parent / "leaf"
+
+        previous_umask = os.umask(0o022)
+        try:
+            config.ensure_private_dir(leaf)
+        finally:
+            os.umask(previous_umask)
+
+        assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
+        assert stat.S_IMODE(grandparent.stat().st_mode) == 0o755
 
 
 class TestConfigurationValidation:
@@ -541,6 +563,106 @@ class TestValidateConfigurationEdgeCases:
 
         with patch.object(config.Path, "mkdir", side_effect=OSError("permission denied")):
             config.ensure_directories()  # should not raise
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits only")
+    def test_ensure_private_dir_repairs_existing_permissions(self, tmp_path):
+        """Directories that already exist (e.g. shipped with .gitkeep) are re-tightened to 0o700."""
+        target = tmp_path / "cache"
+        target.mkdir(mode=0o755)
+        old_umask = os.umask(0o022)
+        try:
+            config.ensure_private_dir(target)
+        finally:
+            os.umask(old_umask)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o700
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits only")
+    def test_ensure_private_dir_creates_owner_only_under_permissive_umask(self, tmp_path):
+        target = tmp_path / "registry"
+        old_umask = os.umask(0o022)
+        try:
+            config.ensure_private_dir(target)
+        finally:
+            os.umask(old_umask)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o700
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits only")
+    def test_ensure_directories_repairs_all_configured_directories(self, monkeypatch, tmp_path):
+        names = ["INPUT_DIR", "OUTPUT_MD_DIR", "OUTPUT_TXT_DIR", "OUTPUT_IMAGES_DIR", "CACHE_DIR", "LOGS_DIR"]
+        for name in names:
+            directory = tmp_path / name.lower()
+            directory.mkdir(mode=0o755)
+            monkeypatch.setattr(config, name, directory)
+        monkeypatch.setattr(config, "METADATA_DIR", tmp_path / "logs_dir" / "metadata")
+        old_umask = os.umask(0o022)
+        try:
+            config.ensure_directories()
+        finally:
+            os.umask(old_umask)
+        for name in names + ["METADATA_DIR"]:
+            mode = stat.S_IMODE(getattr(config, name).stat().st_mode)
+            assert mode == 0o700, f"{name} is {oct(mode)}, expected 0o700"
+
+
+class TestPdfRenderResourceCaps:
+    """PDF rasterization caps that bound Poppler's allocation before it runs."""
+
+    def test_safe_int_above_max_val_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("TEST_INT_MAX", "1200")
+        assert config._safe_int("TEST_INT_MAX", 200, min_val=72, max_val=600) == 200
+
+    def test_safe_int_at_max_val_is_accepted(self, monkeypatch):
+        monkeypatch.setenv("TEST_INT_MAX", "600")
+        assert config._safe_int("TEST_INT_MAX", 200, min_val=72, max_val=600) == 600
+
+    def test_safe_int_without_max_val_accepts_large_values(self, monkeypatch):
+        monkeypatch.setenv("TEST_INT_NO_MAX", "10000000")
+        assert config._safe_int("TEST_INT_NO_MAX", 200, min_val=72) == 10_000_000
+
+    @pytest.mark.parametrize("value", ["601", "20000"])
+    def test_pdf_image_dpi_above_ceiling_falls_back_to_default(self, monkeypatch, restore_runtime_config, value):
+        monkeypatch.setenv("PDF_IMAGE_DPI", value)
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.PDF_IMAGE_DPI == 200
+
+    def test_pdf_image_dpi_within_range_is_kept(self, monkeypatch, restore_runtime_config):
+        monkeypatch.setenv("PDF_IMAGE_DPI", "300")
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.PDF_IMAGE_DPI == 300
+
+    def test_pdf_render_caps_have_expected_defaults(self, monkeypatch, restore_runtime_config):
+        monkeypatch.delenv("PDF_IMAGE_MAX_DPI", raising=False)
+        monkeypatch.delenv("PDF_IMAGE_MAX_PIXELS_PER_PAGE", raising=False)
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.PDF_IMAGE_MAX_DPI == 600
+        assert config.PDF_IMAGE_MAX_PIXELS_PER_PAGE == 178956970
+
+    def test_pdf_render_caps_parse_from_environment(self, monkeypatch, restore_runtime_config):
+        monkeypatch.setenv("PDF_IMAGE_MAX_DPI", "300")
+        monkeypatch.setenv("PDF_IMAGE_MAX_PIXELS_PER_PAGE", "0")
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.PDF_IMAGE_MAX_DPI == 300
+        assert config.PDF_IMAGE_MAX_PIXELS_PER_PAGE == 0
+
+    def test_pdf_image_max_dpi_below_minimum_falls_back(self, monkeypatch, restore_runtime_config):
+        monkeypatch.setenv("PDF_IMAGE_MAX_DPI", "10")
+        monkeypatch.setattr(config, "load_dotenv", lambda *, override=False: False)
+
+        config.reload_settings()
+
+        assert config.PDF_IMAGE_MAX_DPI == 600
 
 
 class TestInitializeIdempotent:

@@ -91,7 +91,7 @@ Routing plan:
   notes.txt                   -> MarkItDown (local)
 ```
 
-All conversion modes process multiple files concurrently when more than one is selected.
+Modes 1-4 (Smart, MarkItDown, Mistral OCR, PDF to Images) process multiple files concurrently when more than one is selected. Document QnA takes exactly one local file. Batch OCR uploads the selected files one after another, then submits a single job.
 
 ### CLI Reference
 
@@ -236,7 +236,7 @@ python3 main.py --mode batch_ocr --batch-action submit --no-interactive
 
 ### System Status and Diagnostics
 
-System Status is available as interactive menu option 7, or from the CLI via `python3 main.py --mode status` (alias: `--test`). It reports optional feature readiness alongside configuration and cache stats:
+System Status is available as interactive menu option 7, or from the CLI via `python3 main.py --mode status` (alias: `--test`). `--test` does nothing but run status, so it is rejected with exit code 2 when combined with `--mode` (other than `status`), `--no-interactive`, `--batch-action`, `--batch-job-id`, `--qna-question`, `--qna-document-url`, `--qna-no-stream`, `--stdin`, or `--stdin-filename`. It reports optional feature readiness alongside configuration and cache stats:
 
 ```
 Optional Features:

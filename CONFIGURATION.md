@@ -564,6 +564,7 @@ CLEANUP_OLD_UPLOADS=true
 - **Default:** `registry`
 - **Options:** `registry`, `all`
 - **Description:** `registry` deletes only file IDs recorded by this app (safe for shared API keys). `all` deletes every account OCR/batch file older than retention (destructive when keys are shared).
+- **Registry file:** `cache/mistral_upload_registry.json`, guarded by `cache/mistral_upload_registry.lock` (mode `0o600`). Processes sharing a checkout take that lock around every registry update, so concurrent runs cannot drop each other's entries. Cleanup holds no lock while it deletes remote files.
 
 ```ini
 CLEANUP_UPLOAD_SCOPE=registry
@@ -717,6 +718,8 @@ PDF_IMAGE_FORMAT="png"
 - **Type:** Integer
 - **Default:** `200`
 - **Minimum:** `72` (lower values fall back to the default)
+- **Maximum:** `600` (higher values fall back to the default)
+- **Description:** Default render resolution. The environment value is checked against the fixed range `[72, 600]`, which does not depend on `PDF_IMAGE_MAX_DPI`. A value outside that range is never clamped: it falls back to the default 200 with a warning, `PDF_IMAGE_DPI=<n> is above maximum 600, using default 200` (or `is below minimum 72`). Clamping happens later and separately: whatever DPI reaches `convert_pdf_to_images`, whether it comes from this setting or from a caller argument, is clamped into `[72, PDF_IMAGE_MAX_DPI]` and logged as `Requested render DPI <x> is outside [72, <max>]; using <clamped>`.
 - **Recommendations:**
   - 150 - Screen viewing
   - 200 - General purpose
@@ -755,6 +758,29 @@ PDF_IMAGE_USE_PDFTOCAIRO=true
 
 ```ini
 PDF_IMAGE_MAX_PAGES=100
+```
+
+### PDF_IMAGE_MAX_DPI
+
+- **Type:** Integer
+- **Default:** `600`
+- **Minimum:** `72` (lower values fall back to the default)
+- **Maximum:** none — this is a ceiling, not a range, so any value of 72 or more is accepted
+- **Description:** Ceiling on the render resolution, whether it comes from `PDF_IMAGE_DPI` or from a caller argument. The DPI that reaches rendering is clamped into `[72, PDF_IMAGE_MAX_DPI]` and logged: `Requested render DPI <x> is outside [72, <max>]; using <clamped>`. This clamp is the only one: an out-of-range `PDF_IMAGE_DPI` environment value falls back to its default instead (see above).
+
+```ini
+PDF_IMAGE_MAX_DPI=600
+```
+
+### PDF_IMAGE_MAX_PIXELS_PER_PAGE
+
+- **Type:** Integer
+- **Default:** `178956970` (Pillow's decompression-bomb threshold)
+- **Minimum:** `0` (`0` turns the check off)
+- **Description:** Largest page Poppler may rasterize, in pixels. The page area is measured before the render call as page size in points x `(dpi / 72)^2`, matching how Poppler sizes its output (it ignores `/UserUnit`), so a small PDF with a huge media box is refused instead of demanding gigabytes of memory. Over-budget files fail with `PDF page renders too many pixels (<n> at <dpi> DPI). Maximum allowed: <limit>`; a PDF whose geometry cannot be read fails closed with `Cannot determine PDF page geometry: <reason>`. Table extraction rasterizes nothing and is unaffected.
+
+```ini
+PDF_IMAGE_MAX_PIXELS_PER_PAGE=178956970
 ```
 
 ---
@@ -863,7 +889,8 @@ MAX_BATCH_FILES=100
 
 - **Type:** Integer
 - **Default:** `1000`
-- **Description:** Shared finite maximum for OCR pages per session, batch OCR admission, PDF rendering, and table work. Must be at least `1`; `0` and negative environment values are rejected and fall back to `1000`.
+- **Description:** One number with two jobs. For Mistral OCR and batch OCR admission it is a running budget: every page reserved during the process counts against it, and work is refused once it runs out. For PDF rendering and PDF table extraction it is a per-document page ceiling: a PDF above it is skipped, but rendering and table work never draw the running budget down. Must be at least `1`; `0` and negative environment values are rejected and fall back to `1000`.
+- **Batch note:** The estimate a batch reserves is charged when the job is submitted, and every failed submit returns it. The CLI batch mode also returns it in a `finally` block, so an abandoned run holds nothing. A library caller that creates a JSONL and never submits it should call `mistral_converter.discard_batch_page_reservation(path)`; otherwise the credit is released the next time `mistral_converter.reset_session_page_counter()` runs, which drains parked reservations before it resets. Creating a batch file at a path that already holds a reservation replaces the old estimate and releases it.
 
 ```ini
 MAX_PAGES_PER_SESSION=1000
@@ -1324,6 +1351,8 @@ VERBOSE_PROGRESS=true
 | PDF_IMAGE_FORMAT                   | string | png                  | No                                                                    | PDF to Image      |
 | PDF_IMAGE_DPI                      | int    | 200                  | No                                                                    | PDF to Image      |
 | PDF_IMAGE_MAX_PAGES                | int    | 100                  | No                                                                    | PDF to Image      |
+| PDF_IMAGE_MAX_DPI                  | int    | 600                  | No                                                                    | PDF to Image      |
+| PDF_IMAGE_MAX_PIXELS_PER_PAGE      | int    | 178956970            | No                                                                    | PDF to Image      |
 | CLEANUP_UPLOAD_ALL_CONFIRM         | bool   | false                | No                                                                    | Maintenance       |
 | ENABLE_RETRIES                     | bool   | derived              | No                                                                    | Retry             |
 | PDF_IMAGE_THREAD_COUNT             | int    | 4                    | No                                                                    | PDF to Image      |

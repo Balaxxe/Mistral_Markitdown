@@ -174,6 +174,7 @@ Common fixtures are available in `tests/conftest.py`:
 - `sample_pdf_path`: Sample PDF file
 - `sample_markdown`: Sample markdown content
 - `mock_env_vars`: Mocked environment variables
+- `relax_strict_input_paths`: Turns off input-directory confinement. Not automatic — tests run with the shipped default (`STRICT_INPUT_PATH_RESOLUTION=true`). Ask for this fixture only when permissive-path behavior is the subject; a test that just needs a file outside `input/` should monkeypatch `config.INPUT_DIR` to `tmp_path`.
 
 ## Project Structure
 
@@ -215,7 +216,9 @@ Mistral_Markitdown/
 │   ├── test_mistral_qna.py        # Document QnA tests
 │   ├── test_mistral_resource_limits.py # OCR response resource-budget tests
 │   ├── test_mistral_url_validation.py # URL and SSRF validation tests
-│   ├── test_integration_markitdown.py # On-disk MarkItDown integration tests
+│   ├── test_integration_markitdown.py # On-disk integration tests, including real (unmocked) MarkItDown conversions
+│   ├── test_upload_registry_multiprocess.py # Cross-process upload-registry locking test
+│   ├── test_strict_path_admission.py # Path admission on the Mistral entry points under strict confinement
 │   ├── test_pipeline.py     # End-to-end pipeline tests
 │   ├── test_schemas.py      # Schema validation tests
 │   └── test_utils.py        # Utility function tests

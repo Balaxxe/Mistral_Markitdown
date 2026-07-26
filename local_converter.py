@@ -947,6 +947,40 @@ def _pdf_page_count(pdf_path: Path) -> int:
         return len(pdf.pages)
 
 
+def _pdf_max_page_pixels(pdf_path: Path, dpi: int, page_limit: Optional[int] = None) -> int:
+    """Return the largest rasterized page size, in pixels, across the admitted pages.
+
+    Poppler's ``pdftoppm``/``pdftocairo`` size their output from the page box in
+    points times ``dpi / 72`` and ignore ``/UserUnit``, so the estimate does the
+    same.
+    """
+    if pdfplumber is None:
+        raise RuntimeError("pdfplumber is required to determine PDF page geometry")
+
+    scale = (float(dpi) / 72.0) ** 2
+    largest = 0.0
+    with pdfplumber.open(pdf_path) as pdf:
+        pages = pdf.pages if page_limit is None else pdf.pages[:page_limit]
+        for page in pages:
+            area = float(page.width) * float(page.height)
+            largest = max(largest, area)
+    return int(largest * scale)
+
+
+def _pdf_render_pixel_error(pdf_path: Path, dpi: int, page_limit: Optional[int] = None) -> Optional[str]:
+    """Return the configured PDF render pixel-budget error, if any."""
+    pixel_limit = int(getattr(config, "PDF_IMAGE_MAX_PIXELS_PER_PAGE", 0) or 0)
+    if pixel_limit <= 0:
+        return None
+    try:
+        max_page_pixels = _pdf_max_page_pixels(pdf_path, dpi, page_limit)
+    except Exception as e:
+        return f"Cannot determine PDF page geometry: {e}"
+    if max_page_pixels > pixel_limit:
+        return f"PDF page renders too many pixels ({max_page_pixels} at {dpi} DPI). Maximum allowed: {pixel_limit}"
+    return None
+
+
 def _pdf_page_limit_error(page_count: int) -> Optional[str]:
     """Return the configured PDF render page-policy error, if any."""
     session_page_limit = int(config.MAX_PAGES_PER_SESSION)
@@ -1043,15 +1077,24 @@ def convert_pdf_to_images(
         if admitted_pages is None:
             return False, [], "Cannot determine PDF page count"
 
-        # Set output directory (unique stem when same basename in different dirs)
+        # Set output directory (unique stem when same basename in different dirs).
+        # Config-owned defaults stay owner-only; caller-supplied dirs keep their permissions.
         if output_dir is None:
             output_dir = config.OUTPUT_IMAGES_DIR / f"{utils.safe_output_stem(pdf_path)}_pages"
-
-        output_dir.mkdir(parents=True, exist_ok=True)
+            config.ensure_private_dir(output_dir)
+        else:
+            output_dir.mkdir(parents=True, exist_ok=True)
 
         # Use config defaults if not specified
-        if dpi is None:
-            dpi = config.PDF_IMAGE_DPI
+        resolved_dpi = int(config.PDF_IMAGE_DPI if dpi is None else dpi)
+        max_dpi = int(getattr(config, "PDF_IMAGE_MAX_DPI", 600) or 600)
+        dpi = max(72, min(resolved_dpi, max_dpi))
+        if dpi != resolved_dpi:
+            logger.warning("Requested render DPI %s is outside [72, %d]; using %d", resolved_dpi, max_dpi, dpi)
+
+        pixel_error = _pdf_render_pixel_error(pdf_path, dpi, admitted_pages)
+        if pixel_error:
+            return False, [], pixel_error
 
         resolved_thread_count = int(config.PDF_IMAGE_THREAD_COUNT if thread_count is None else thread_count)
 

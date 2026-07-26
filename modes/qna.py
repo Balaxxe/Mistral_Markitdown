@@ -145,6 +145,11 @@ def mode_document_qna(
             return False, "Mistral client not available"
         if file_path is None:
             return False, "Internal error: file_path is None in non-URL QnA mode"
+        # Validate before asking the user anything: the upload guard fires much
+        # later and only logs the precise reason.
+        is_valid, validation_message = utils.validate_file(file_path, mode="qna")
+        if not is_valid:
+            return False, validation_message or f"Cannot query {file_path.name}"
         try:
             file_size_mb = file_path.stat().st_size / (1024 * 1024)
             cap = config.MISTRAL_QNA_MAX_FILE_SIZE_MB
@@ -171,7 +176,7 @@ def mode_document_qna(
             return None
         if signed_url and (time.time() - upload_started_at) < ttl_seconds * config.MISTRAL_SIGNED_URL_REFRESH_THRESHOLD:
             return signed_url
-        signed_url = mistral_converter.upload_file_for_ocr(client, file_path)
+        signed_url = mistral_converter.upload_file_for_ocr(client, file_path, mode="qna")
         upload_started_at = time.time()
         return signed_url
 

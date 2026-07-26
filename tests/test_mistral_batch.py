@@ -14,6 +14,7 @@ config.ensure_directories()
 
 import mistral_converter
 import mistral_converter.batch as batch_module
+import utils
 
 # ============================================================================
 # _validate_document_url Tests
@@ -241,6 +242,21 @@ class TestDownloadBatchResults:
         assert (ok, path) == (False, None)
         assert "denied" in (error or "")
         assert response.closed is True
+
+    def test_default_output_dir_failure_returns_an_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path / "denied")
+        monkeypatch.setattr(
+            config,
+            "ensure_private_dir",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+            ok, path, error = mistral_converter.download_batch_results("job_no_dir")
+
+        assert (ok, path) == (False, None)
+        assert "Cannot create output directory" in (error or "")
+        assert "denied" in (error or "")
 
     def test_job_not_complete(self):
         mock_job = MagicMock()
@@ -470,8 +486,15 @@ class TestCreateBatchOcrFileFull:
     @pytest.fixture(autouse=True)
     def _allow_tmp_batch_inputs(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
-        mistral_converter.reset_session_page_counter()
+        self._clear_session_pages()
         yield
+        self._clear_session_pages()
+
+    @staticmethod
+    def _clear_session_pages():
+        """Drop any batch reservation left inflight so the counter can reset."""
+        batch_module._PENDING_BATCH_RESERVATIONS.clear()
+        mistral_converter._release_session_pages_reservation(mistral_converter._session_pages_inflight)
         mistral_converter.reset_session_page_counter()
 
     def test_successful_creation(self, tmp_path, monkeypatch):
@@ -745,80 +768,148 @@ class TestCreateBatchOcrFileFull:
         assert mistral_converter._reserve_session_pages(2) is True
         mistral_converter._release_session_pages_reservation(2)
 
-    def test_commits_batch_page_estimate_after_jsonl_creation(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 3)
+    def _create_reserved_batch(self, tmp_path, client, *, estimate=2):
+        """Create a batch JSONL whose page estimate stays reserved for a submit."""
         pdf = tmp_path / "document.pdf"
         pdf.write_bytes(b"%PDF")
-        client = MagicMock()
+        output = tmp_path / "batch.jsonl"
 
-        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
+        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=estimate):
             with patch.object(mistral_converter, "get_mistral_client", return_value=client):
                 with patch.object(
                     mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
                 ):
-                    ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
+                    ok, path, error = mistral_converter.create_batch_ocr_file([pdf], output)
 
-        assert (ok, path, error) == (True, tmp_path / "batch.jsonl", None)
+        assert (ok, path, error) == (True, output, None)
+        return output
+
+    def test_batch_page_estimate_stays_reserved_until_submit_succeeds(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 3)
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        client = MagicMock()
+        client.files.upload.return_value = MagicMock(id="batch_file_id")
+        client.batch.jobs.create.return_value = MagicMock(id="job_abc")
+
+        output = self._create_reserved_batch(tmp_path, client)
+
+        assert mistral_converter._session_pages_inflight == 2
+        assert mistral_converter._session_pages_processed == 0
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+            ok, job_id, error = mistral_converter.submit_batch_ocr_job(output)
+
+        assert (ok, job_id, error) == (True, "job_abc", None)
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter._session_pages_processed == 2
         assert mistral_converter._reserve_session_pages(2) is False
 
-    def test_failed_commit_does_not_release_a_later_reservation(self, tmp_path, monkeypatch):
-        """A failed commit already consumed its reservation before ``finally`` runs."""
-        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 4)
-        pdf = tmp_path / "document.pdf"
-        pdf.write_bytes(b"%PDF")
+    def test_submit_failure_releases_the_batch_page_reservation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 2)
         client = MagicMock()
-        commit_pages = mistral_converter._commit_session_pages
-
-        def commit_then_fail(reserved, actual):
-            assert commit_pages(reserved, actual) is True
-            # Model a concurrent worker reserving pages after the commit has
-            # released this batch's inflight credit.
-            assert mistral_converter._reserve_session_pages(2) is True
-            return False
-
-        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
-            with patch.object(mistral_converter, "get_mistral_client", return_value=client):
-                with patch.object(
-                    mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
-                ):
-                    with patch.object(mistral_converter, "_commit_session_pages", side_effect=commit_then_fail):
-                        ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
-
-        assert (ok, path) == (False, None)
-        assert "could not be committed" in (error or "")
-        assert mistral_converter._session_pages_processed == 2
+        output = self._create_reserved_batch(tmp_path, client)
         assert mistral_converter._session_pages_inflight == 2
+
+        client.files.upload.side_effect = RuntimeError("submit failed")
+        with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+            ok, job_id, error = mistral_converter.submit_batch_ocr_job(output)
+
+        assert (ok, job_id) == (False, None)
+        assert "submit failed" in (error or "")
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter._session_pages_processed == 0
+        assert mistral_converter._reserve_session_pages(2) is True
         mistral_converter._release_session_pages_reservation(2)
 
-    def test_raised_commit_does_not_release_a_later_reservation(self, tmp_path, monkeypatch):
-        """An exception after commit consumption must not trigger a second release."""
-        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 4)
-        pdf = tmp_path / "document.pdf"
-        pdf.write_bytes(b"%PDF")
+    def test_missing_upload_id_releases_the_batch_page_reservation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 2)
         client = MagicMock()
-        commit_pages = mistral_converter._commit_session_pages
+        output = self._create_reserved_batch(tmp_path, client)
 
-        def commit_then_raise(reserved, actual):
-            assert commit_pages(reserved, actual) is True
-            assert mistral_converter._reserve_session_pages(2) is True
-            raise RuntimeError("commit observer failed")
+        client.files.upload.return_value = MagicMock(spec=[])
+        with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+            ok, job_id, error = mistral_converter.submit_batch_ocr_job(output)
 
-        with patch.object(mistral_converter, "_estimate_session_pages_for_ocr", return_value=2):
-            with patch.object(mistral_converter, "get_mistral_client", return_value=client):
-                with patch.object(
-                    mistral_converter, "_upload_file_for_ocr_pair", return_value=("https://signed", "file-1")
-                ):
-                    with patch.object(mistral_converter, "_commit_session_pages", side_effect=commit_then_raise):
-                        ok, path, error = mistral_converter.create_batch_ocr_file([pdf], tmp_path / "batch.jsonl")
-
-        assert (ok, path) == (False, None)
-        assert "commit observer failed" in (error or "")
-        assert mistral_converter._session_pages_processed == 2
-        assert mistral_converter._session_pages_inflight == 2
+        assert (ok, job_id) == (False, None)
+        assert "missing file ID" in (error or "")
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter._reserve_session_pages(2) is True
         mistral_converter._release_session_pages_reservation(2)
+
+    def test_unavailable_client_releases_the_batch_page_reservation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 2)
+        output = self._create_reserved_batch(tmp_path, MagicMock())
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=None):
+            ok, job_id, error = mistral_converter.submit_batch_ocr_job(output)
+
+        assert (ok, job_id) == (False, None)
+        assert "not available" in (error or "")
+        assert mistral_converter._session_pages_inflight == 0
+
+    def test_discarding_an_unsubmitted_batch_frees_the_reservation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 5)
+        output = self._create_reserved_batch(tmp_path, MagicMock())
+
+        assert mistral_converter._commit_session_pages(0, 1) is True
+        assert mistral_converter._session_pages_inflight == 2
+
+        assert mistral_converter.discard_batch_page_reservation(output) == 2
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter.discard_batch_page_reservation(output) == 0
+
+        mistral_converter.reset_session_page_counter()
+        assert mistral_converter._session_pages_processed == 0
+
+    def test_reset_drains_an_abandoned_batch_reservation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 5)
+        self._create_reserved_batch(tmp_path, MagicMock())
+        assert mistral_converter._session_pages_inflight == 2
+
+        mistral_converter.reset_session_page_counter()
+
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter._session_pages_processed == 0
+        assert mistral_converter._reserve_session_pages(5) is True
+        mistral_converter._release_session_pages_reservation(5)
+
+    def test_reset_still_refuses_while_a_sync_reservation_is_inflight(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 5)
+        assert mistral_converter._reserve_session_pages(2) is True
+        assert mistral_converter._commit_session_pages(0, 1) is True
+
+        mistral_converter.reset_session_page_counter()
+
+        assert mistral_converter._session_pages_inflight == 2
+        assert mistral_converter._session_pages_processed == 1
+
+        mistral_converter._release_session_pages_reservation(2)
+        mistral_converter.reset_session_page_counter()
+        assert mistral_converter._session_pages_processed == 0
+
+    def test_recreating_the_same_batch_file_replaces_the_reservation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 10)
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        client = MagicMock()
+        client.files.upload.return_value = MagicMock(id="batch_file_id")
+        client.batch.jobs.create.return_value = MagicMock(id="job_abc")
+
+        self._create_reserved_batch(tmp_path, client, estimate=2)
+        output = self._create_reserved_batch(tmp_path, client, estimate=3)
+
+        # The rewritten JSONL owns 3 pages; the superseded 2 went back to the budget.
+        assert mistral_converter._session_pages_inflight == 3
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=client):
+            ok, job_id, error = mistral_converter.submit_batch_ocr_job(output)
+
+        assert (ok, job_id, error) == (True, "job_abc", None)
+        assert mistral_converter._session_pages_inflight == 0
+        assert mistral_converter._session_pages_processed == 3
 
     def test_non_strict_partial_batch_logs_visible_omission_warning(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(config, "MISTRAL_BATCH_STRICT", False)
+        monkeypatch.setattr(utils.logger, "propagate", True)
         first = tmp_path / "first.pdf"
         second = tmp_path / "second.pdf"
         first.write_bytes(b"%PDF")

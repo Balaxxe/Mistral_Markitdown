@@ -2,7 +2,7 @@
 
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import config
 import utils
@@ -12,6 +12,38 @@ _session_pages_processed = 0
 _session_pages_inflight = 0  # reserved estimate while OCR HTTP call is in flight
 _session_pages_warned = False
 _session_pages_lock = threading.Lock()
+
+# Hooks that release parked (not actively running) page credit before a reset.
+# Registered by modules that hold reservations across calls, e.g. batch files
+# created but never submitted. Keeps this module free of reverse imports.
+_pending_reservation_drains: List[Callable[[], int]] = []
+_pending_reservation_drains_lock = threading.Lock()
+
+
+def register_pending_reservation_drain(fn: Callable[[], int]) -> None:
+    """Register a callable that releases parked page credit and returns its size.
+
+    ``reset_session_page_counter`` runs every registered hook before it checks
+    for inflight pages, so credit that is merely parked cannot block a reset
+    while genuinely running OCR work still can. Registration is idempotent.
+    """
+    with _pending_reservation_drains_lock:
+        if fn in _pending_reservation_drains:
+            return
+        _pending_reservation_drains.append(fn)
+
+
+def _drain_pending_reservations() -> int:
+    """Run every drain hook and return the total pages released."""
+    with _pending_reservation_drains_lock:
+        hooks = list(_pending_reservation_drains)
+    released = 0
+    for hook in hooks:
+        try:
+            released += max(0, int(hook() or 0))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Pending reservation drain hook failed: %s", e)
+    return released
 
 
 def _session_page_limit() -> int:
@@ -150,11 +182,16 @@ def reset_session_page_counter() -> None:
     """Reset the session page counter so a new logical session can start fresh.
 
     Useful when embedding the converter in a long-lived process (e.g. a web
-    service) where each request should have its own page budget. A reset is
-    skipped while OCR work is active so neither committed nor reserved usage
-    can be detached from requests that are still completing.
+    service) where each request should have its own page budget. Parked credit
+    (for example a batch file that was created but never submitted) is drained
+    first; a reset is still skipped while OCR work is active so neither
+    committed nor reserved usage can be detached from requests that are still
+    completing.
     """
     global _session_pages_processed, _session_pages_warned
+    drained = _drain_pending_reservations()
+    if drained:
+        logger.info("Released %d parked page(s) before resetting the session page counter", drained)
     with _session_pages_lock:
         if _session_pages_inflight > 0:
             logger.warning(

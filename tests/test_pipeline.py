@@ -503,7 +503,8 @@ class TestListInputFiles:
 class TestFilterValidFiles:
     """Test file validation filtering."""
 
-    def test_filters_invalid_files(self, tmp_path):
+    def test_filters_invalid_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         valid = tmp_path / "good.pdf"
         valid.write_text("content")
         invalid = tmp_path / "bad.xyz"
@@ -705,6 +706,11 @@ class TestModePdfToImages:
 class TestModeDocumentQna:
     """Test document QnA mode."""
 
+    @pytest.fixture(autouse=True)
+    def _qna_inputs_under_input_dir(self, monkeypatch, tmp_path):
+        """QnA admission runs utils.validate_file; keep tmp_path files inside the input boundary."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+
     def test_requires_api_key(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "")
         success, msg = main.mode_document_qna([tmp_path / "doc.pdf"])
@@ -787,7 +793,7 @@ class TestModeDocumentQna:
             mock_client.chat.complete.return_value = MagicMock(choices=[choice])
 
         monkeypatch.setattr(mistral_converter, "get_mistral_client", lambda: mock_client)
-        monkeypatch.setattr(mistral_converter, "upload_file_for_ocr", lambda *_: "https://signed.example/doc")
+        monkeypatch.setattr(mistral_converter, "upload_file_for_ocr", lambda *_a, **_k: "https://signed.example/doc")
 
         success, message = main.mode_document_qna(
             [pdf],
@@ -1915,6 +1921,11 @@ class TestMainCliExpanded:
 class TestModeDocumentQnaExpanded:
     """Test Document QnA mode with mocked interactions."""
 
+    @pytest.fixture(autouse=True)
+    def _qna_inputs_under_input_dir(self, monkeypatch, tmp_path):
+        """QnA admission runs utils.validate_file; keep tmp_path files inside the input boundary."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+
     def test_no_client_available(self, tmp_path, monkeypatch):
         """Line 324: client returns None."""
         pdf = tmp_path / "test.pdf"
@@ -2168,48 +2179,49 @@ class TestValidateArgsScenarios:
         monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", False)
         monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
 
-    def _expect_argparse_error(self, monkeypatch, argv, fragment):
+    def _expect_argparse_error(self, monkeypatch, capsys, argv, fragment):
         monkeypatch.setattr("sys.argv", argv)
         with pytest.raises(SystemExit) as exc_info:
             main.main()
         assert exc_info.value.code == 2
-        # argparse writes the error message to stderr before exiting. pytest's
-        # capsys is unavailable inside a plain function, so just asserting on
-        # the exit code is sufficient; the message fragment is documented here
-        # for anyone reading the test.
-        del fragment
+        assert fragment in capsys.readouterr().err
 
-    def test_stdin_without_markitdown_mode_rejected(self, monkeypatch):
+    def test_stdin_without_markitdown_mode_rejected(self, monkeypatch, capsys):
         self._expect_argparse_error(
             monkeypatch,
+            capsys,
             ["main.py", "--mode", "smart", "--stdin", "--no-interactive"],
             "--stdin can only be used with --mode markitdown",
         )
 
-    def test_stdin_requires_no_interactive(self, monkeypatch):
+    def test_stdin_requires_no_interactive(self, monkeypatch, capsys):
         self._expect_argparse_error(
             monkeypatch,
+            capsys,
             ["main.py", "--mode", "markitdown", "--stdin"],
             "--stdin requires --no-interactive",
         )
 
-    def test_stdin_filename_requires_stdin(self, monkeypatch):
+    def test_stdin_filename_requires_stdin(self, monkeypatch, capsys):
         self._expect_argparse_error(
             monkeypatch,
+            capsys,
             ["main.py", "--mode", "markitdown", "--no-interactive", "--stdin-filename", "r.pdf"],
             "--stdin-filename requires --stdin",
         )
 
-    def test_qna_question_rejected_outside_qna_mode(self, monkeypatch):
+    def test_qna_question_rejected_outside_qna_mode(self, monkeypatch, capsys):
         self._expect_argparse_error(
             monkeypatch,
+            capsys,
             ["main.py", "--mode", "smart", "--qna-question", "why"],
             "--qna-question can only be used with --mode qna",
         )
 
-    def test_qna_document_url_requires_no_interactive(self, monkeypatch):
+    def test_qna_document_url_requires_no_interactive(self, monkeypatch, capsys):
         self._expect_argparse_error(
             monkeypatch,
+            capsys,
             ["main.py", "--mode", "qna", "--qna-document-url", "https://example.com/a.pdf"],
             "--qna-document-url requires --no-interactive",
         )
@@ -2225,22 +2237,61 @@ class TestValidateArgsScenarios:
             (["main.py", "--mode", "batch_ocr", "--batch-job-id", "job-1"], "--batch-job-id requires --no-interactive"),
         ],
     )
-    def test_automation_options_require_no_interactive(self, monkeypatch, argv, fragment):
-        self._expect_argparse_error(monkeypatch, argv, fragment)
+    def test_automation_options_require_no_interactive(self, monkeypatch, capsys, argv, fragment):
+        self._expect_argparse_error(monkeypatch, capsys, argv, fragment)
 
-    def test_batch_action_rejected_outside_batch_mode(self, monkeypatch):
+    def test_batch_action_rejected_outside_batch_mode(self, monkeypatch, capsys):
         self._expect_argparse_error(
             monkeypatch,
+            capsys,
             ["main.py", "--mode", "smart", "--batch-action", "submit"],
             "--batch-action can only be used with --mode batch_ocr",
         )
 
-    def test_batch_job_id_rejected_outside_batch_mode(self, monkeypatch):
+    def test_batch_job_id_rejected_outside_batch_mode(self, monkeypatch, capsys):
         self._expect_argparse_error(
             monkeypatch,
+            capsys,
             ["main.py", "--mode", "smart", "--batch-job-id", "abc123"],
             "--batch-job-id can only be used with --mode batch_ocr",
         )
+
+
+class TestTestFlagExclusivity:
+    """``--test`` is an alias for ``--mode status`` and rejects conversion flags."""
+
+    @pytest.fixture(autouse=True)
+    def _no_bg_tasks(self, monkeypatch):
+        monkeypatch.setattr(config, "CLEANUP_OLD_UPLOADS", False)
+        monkeypatch.setattr(config, "AUTO_CLEAR_CACHE", False)
+
+    @pytest.mark.parametrize(
+        "extra_argv",
+        [
+            ["--mode", "smart"],
+            ["--no-interactive"],
+            ["--mode", "batch_ocr", "--no-interactive", "--batch-action", "submit"],
+            ["--mode", "batch_ocr", "--no-interactive", "--batch-job-id", "job-1"],
+            ["--mode", "qna", "--no-interactive", "--qna-question", "why"],
+            ["--mode", "qna", "--no-interactive", "--qna-document-url", "https://example.com/a.pdf"],
+            ["--mode", "qna", "--qna-no-stream"],
+            ["--mode", "markitdown", "--no-interactive", "--stdin"],
+            ["--mode", "markitdown", "--no-interactive", "--stdin", "--stdin-filename", "r.pdf"],
+        ],
+    )
+    def test_test_flag_rejects_conversion_flags(self, monkeypatch, capsys, extra_argv):
+        monkeypatch.setattr("sys.argv", ["main.py", "--test"] + extra_argv)
+        with pytest.raises(SystemExit) as exc_info:
+            main.main()
+        assert exc_info.value.code == 2
+        assert "--test cannot be combined" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("argv", [["main.py", "--test"], ["main.py", "--test", "--mode", "status"]])
+    def test_test_flag_alone_and_with_status_mode_succeed(self, monkeypatch, argv):
+        monkeypatch.setattr("sys.argv", argv)
+        with pytest.raises(SystemExit) as exc_info:
+            main.main()
+        assert exc_info.value.code == 0
 
 
 class TestBatchNoFilesCliScenarios:
@@ -2289,6 +2340,11 @@ class TestBatchNoFilesCliScenarios:
 
 class TestQnaCliScenarios:
     """QnA CLI edge cases that do not need real SDK calls."""
+
+    @pytest.fixture(autouse=True)
+    def _qna_inputs_under_input_dir(self, monkeypatch, tmp_path):
+        """QnA admission runs utils.validate_file; keep tmp_path files inside the input boundary."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
 
     def test_non_interactive_without_question_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "test_key")

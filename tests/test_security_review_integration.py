@@ -50,6 +50,7 @@ class TestMarkItDownStdinBoundary:
 class TestSharedBatchAndSyncPageBudget:
     def test_batch_commit_consumes_budget_seen_by_sync_public_api(self, tmp_path, monkeypatch):
         """A batch created via the facade leaves only its remaining budget to OCR."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         _reset_page_budget()
         monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 2)
         monkeypatch.setattr(config, "MAX_BATCH_FILES", 5)

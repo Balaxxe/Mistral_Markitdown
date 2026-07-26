@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import config
 import utils
 
+from . import session as _session_module
 from .client import _http_client_exceptions
 from .facade import attr
 
@@ -24,10 +26,108 @@ _MAX_BATCH_UPLOAD_TOTAL_BYTES = 1024 * 1024 * 1024
 _MAX_BATCH_DOWNLOAD_BYTES = 512 * 1024 * 1024
 _JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
+# Page credit reserved by ``create_batch_ocr_file`` stays inflight until the
+# matching JSONL is submitted, discarded, or its submit attempt fails.
+_PENDING_BATCH_RESERVATIONS: Dict[str, int] = {}
+_PENDING_BATCH_RESERVATIONS_LOCK = threading.Lock()
+
 
 def _is_valid_job_id(job_id: Any) -> bool:
     """Return whether *job_id* is safe to send to the API or use in a filename."""
     return isinstance(job_id, str) and bool(_JOB_ID_RE.fullmatch(job_id))
+
+
+def _batch_reservation_key(batch_file_path: Path) -> str:
+    """Normalize a batch JSONL path so store and lookup agree."""
+    try:
+        return str(batch_file_path.resolve())
+    except OSError:
+        return str(batch_file_path)
+
+
+def _store_batch_page_reservation(batch_file_path: Path, pages: int) -> None:
+    """Record inflight page credit owned by a created-but-unsubmitted batch file.
+
+    A second create for the same path rewrites the JSONL, so its reservation
+    replaces the earlier one instead of adding to it; the superseded credit is
+    returned to the session budget.
+    """
+    if pages <= 0:
+        return
+    key = _batch_reservation_key(batch_file_path)
+    with _PENDING_BATCH_RESERVATIONS_LOCK:
+        superseded = _PENDING_BATCH_RESERVATIONS.get(key, 0)
+        _PENDING_BATCH_RESERVATIONS[key] = pages
+    if superseded:
+        attr("_release_session_pages_reservation")(superseded)
+        logger.debug(
+            "Released %s superseded reserved page(s) for rewritten batch file %s",
+            superseded,
+            batch_file_path.name,
+        )
+
+
+def _pop_batch_page_reservation(batch_file_path: Path) -> int:
+    """Take ownership of the inflight page credit recorded for a batch file."""
+    key = _batch_reservation_key(batch_file_path)
+    with _PENDING_BATCH_RESERVATIONS_LOCK:
+        return _PENDING_BATCH_RESERVATIONS.pop(key, 0)
+
+
+def discard_batch_page_reservation(batch_file_path: Path) -> int:
+    """
+    Release session page credit reserved for a batch file that will not be submitted.
+
+    ``create_batch_ocr_file`` keeps its admission estimate reserved until
+    ``submit_batch_ocr_job`` commits or releases it. Call this when the JSONL is
+    dropped instead, so the credit cannot stay inflight for the rest of the
+    session and block ``reset_session_page_counter``.
+
+    Args:
+        batch_file_path: Path to the JSONL batch file being discarded
+
+    Returns:
+        Number of pages released (0 when the file held no reservation)
+    """
+    reserved = _pop_batch_page_reservation(batch_file_path)
+    if reserved:
+        attr("_release_session_pages_reservation")(reserved)
+        logger.debug(
+            "Released %s reserved page(s) for discarded batch file %s",
+            reserved,
+            batch_file_path.name,
+        )
+    return reserved
+
+
+def _discard_all_pending_batch_reservations() -> int:
+    """Release every parked batch reservation; return the total pages released.
+
+    Registered with :mod:`mistral_converter.session` so a session page counter
+    reset is not blocked forever by a batch file that was created but never
+    submitted or discarded.
+    """
+    with _PENDING_BATCH_RESERVATIONS_LOCK:
+        parked = list(_PENDING_BATCH_RESERVATIONS.items())
+        _PENDING_BATCH_RESERVATIONS.clear()
+
+    total = 0
+    for key, reserved in parked:
+        if reserved <= 0:
+            continue
+        attr("_release_session_pages_reservation")(reserved)
+        total += reserved
+        logger.debug("Released %s parked page(s) for abandoned batch file %s", reserved, key)
+    if total:
+        logger.info(
+            "Released %s parked page(s) held by %s abandoned batch file(s)",
+            total,
+            len(parked),
+        )
+    return total
+
+
+_session_module.register_pending_reservation_drain(_discard_all_pending_batch_reservations)
 
 
 def _prepare_batch_entries(
@@ -208,18 +308,6 @@ def create_batch_ocr_file(  # noqa: C901
         if sys.platform != "win32":
             os.chmod(output_file, 0o600)
 
-        # A submitted batch cannot provide an actual page count yet; commit the
-        # conservative admission estimate once its JSONL is durably created.
-        # Transfer ownership before invoking commit.  The normal commit
-        # implementation consumes the inflight reservation even on failure;
-        # if a replacement raises before doing so, retaining that credit is
-        # safer than releasing another worker's later reservation.
-        pages_to_commit = reserved_pages
-        reserved_pages = 0
-        committed = attr("_commit_session_pages")(pages_to_commit, pages_to_commit)
-        if not committed:
-            raise RuntimeError("Batch page estimate could not be committed to the session budget")
-
         omitted = len(file_paths) - len(entries)
         if omitted:
             warning = (
@@ -227,6 +315,13 @@ def create_batch_ocr_file(  # noqa: C901
             )
             logger.warning(warning)
         logger.info("Created batch file with %s entries: %s", len(entries), output_file)
+
+        # A submitted batch cannot provide an actual page count yet, and a batch
+        # that is never submitted must not consume budget, so the admission
+        # estimate stays reserved and is handed to ``submit_batch_ocr_job`` (or
+        # to ``discard_batch_page_reservation``) rather than committed here.
+        _store_batch_page_reservation(output_file, reserved_pages)
+        reserved_pages = 0
         return True, output_file, None
 
     except Exception as e:
@@ -256,6 +351,9 @@ def submit_batch_ocr_job(  # noqa: C901
     This submits the batch file for processing and returns a job ID
     that can be used to monitor progress and retrieve results.
 
+    Session page credit reserved by ``create_batch_ocr_file`` is committed on a
+    successful submit and released on every failure path.
+
     Args:
         batch_file_path: Path to the JSONL batch file
         model: OCR model to use (default: mistral-ocr-latest)
@@ -272,8 +370,11 @@ def submit_batch_ocr_job(  # noqa: C901
         >>> if success:
         ...     print(f"Job submitted: {job_id}")
     """
+    reserved_pages = _pop_batch_page_reservation(batch_file_path)
+
     client = attr("get_mistral_client")()
     if client is None:
+        attr("_release_session_pages_reservation")(reserved_pages)
         return False, None, "Mistral client not available"
 
     if model is None:
@@ -310,6 +411,7 @@ def submit_batch_ocr_job(  # noqa: C901
                         uploaded_id,
                         del_err,
                     )
+            attr("_release_session_pages_reservation")(reserved_pages)
             return False, None, "Batch upload response missing file ID"
         batch_file_id = uploaded_id
         logger.info("Batch file uploaded: %s", batch_file_id)
@@ -360,6 +462,12 @@ def submit_batch_ocr_job(  # noqa: C901
                 cleanup_err,
             )
 
+        if reserved_pages and not attr("_commit_session_pages")(reserved_pages, reserved_pages):
+            logger.warning(
+                "Batch page estimate (%s pages) exhausted the session budget; further OCR will be refused",
+                reserved_pages,
+            )
+
         return True, created_job.id, None
 
     except Exception as e:  # pragma: no cover
@@ -377,6 +485,7 @@ def submit_batch_ocr_job(  # noqa: C901
             batch_file_path.unlink(missing_ok=True)
         except OSError:
             pass
+        attr("_release_session_pages_reservation")(reserved_pages)
         error_msg = utils.redact_sensitive_url_data(f"Error submitting batch OCR job: {e}")
         logger.error(error_msg)
         return False, None, error_msg
@@ -471,6 +580,10 @@ def download_batch_results(  # noqa: C901
 
     if output_dir is None:
         output_dir = config.OUTPUT_MD_DIR
+        try:
+            config.ensure_private_dir(output_dir)
+        except OSError as e:
+            return False, None, f"Cannot create output directory {output_dir}: {e}"
 
     try:
         # Get job status to get output file ID

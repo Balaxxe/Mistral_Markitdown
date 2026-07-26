@@ -5,10 +5,66 @@ These complement heavily mocked pipeline tests by asserting real output files.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import config
 import local_converter
 import main
 import utils
+
+
+@pytest.mark.integration
+class TestRealMarkItDownParse:
+    """Unmocked MarkItDown conversions: assert substrings only a real parse produces.
+
+    Exact output is not pinned because the installed MarkItDown may differ from the pin.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _real_markitdown(self, tmp_path, monkeypatch):
+        pytest.importorskip("markitdown")
+        monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 100)
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+        monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path / "md")
+        monkeypatch.setattr(config, "OUTPUT_TXT_DIR", tmp_path / "txt")
+        monkeypatch.setattr(config, "INCLUDE_METADATA", False)
+        monkeypatch.setattr(config, "GENERATE_TXT_OUTPUT", False)
+        config.OUTPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
+
+    def test_real_text_file_round_trips_to_markdown(self, tmp_path):
+        src = tmp_path / "memo.txt"
+        src.write_text("plain text sentinel line\nsecond line\n", encoding="utf-8")
+
+        success, content, error = local_converter.convert_with_markitdown(src)
+
+        assert (success, error) == (True, None)
+        assert "plain text sentinel line" in content
+        output_path = config.OUTPUT_MD_DIR / "memo.md"
+        assert output_path.exists()
+        assert "plain text sentinel line" in output_path.read_text(encoding="utf-8")
+
+    def test_real_html_file_becomes_markdown_structure(self, tmp_path):
+        src = tmp_path / "report.html"
+        src.write_text(
+            "<html><body><h1>Quarterly Report</h1>"
+            "<p>Revenue rose to <strong>42 units</strong>.</p>"
+            "<table><tr><th>Item</th><th>Qty</th></tr>"
+            "<tr><td>Widget</td><td>7</td></tr></table>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+
+        success, content, error = local_converter.convert_with_markitdown(src)
+
+        assert (success, error) == (True, None)
+        output_path = config.OUTPUT_MD_DIR / "report.md"
+        assert output_path.exists()
+        written = output_path.read_text(encoding="utf-8")
+        assert written == content
+        assert "# Quarterly Report" in written
+        assert "**42 units**" in written
+        assert "| Item | Qty |" in written
+        assert "<table>" not in written
 
 
 class TestMarkItDownWritesOutput:

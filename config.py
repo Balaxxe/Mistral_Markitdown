@@ -80,11 +80,11 @@ __all__ = [
 # ============================================================================
 
 
-def _safe_int(env_var: str, default: int, min_val: int = 0) -> int:
+def _safe_int(env_var: str, default: int, min_val: int = 0, max_val: Optional[int] = None) -> int:
     """Parse an integer environment variable with a fallback default.
 
-    Logs a warning and returns *default* when the value cannot be converted
-    or is below *min_val*.
+    Logs a warning and returns *default* when the value cannot be converted,
+    is below *min_val*, or is above *max_val* when one is given.
     """
     raw = os.getenv(env_var, "")
     if not raw:
@@ -97,6 +97,15 @@ def _safe_int(env_var: str, default: int, min_val: int = 0) -> int:
                 env_var,
                 value,
                 min_val,
+                default,
+            )
+            return default
+        if max_val is not None and value > max_val:
+            logging.getLogger("document_converter").warning(
+                "%s=%d is above maximum %d, using default %d",
+                env_var,
+                value,
+                max_val,
                 default,
             )
             return default
@@ -201,7 +210,7 @@ def _runtime_setting(name: str, loader: Callable[[], Any]) -> Any:
 try:
     VERSION = _pkg_version("mistral-markitdown")
 except PackageNotFoundError:
-    VERSION = "3.0.0"
+    VERSION = "3.1.0"
 
 # ============================================================================
 # Project Paths
@@ -234,15 +243,56 @@ METADATA_DIR = LOGS_DIR / "metadata"
 # ============================================================================
 
 
+def ensure_private_dir(directory: Path) -> None:
+    """Create *directory* and keep it owner-only (``0o700``) on POSIX.
+
+    ``mkdir(parents=True, mode=...)`` applies the mode to the leaf only, so
+    every missing level is created one at a time instead.  Directories that
+    already exist (for example those shipped with ``.gitkeep`` placeholders)
+    are repaired with an explicit ``chmod``, but only the leaf: pre-existing
+    ancestors such as the project root keep the mode their owner chose.
+    The chmod is best-effort: filesystems without POSIX mode bits
+    (network shares, exFAT) must not break directory setup.
+    """
+    if sys.platform == "win32":
+        directory.mkdir(parents=True, exist_ok=True)
+        return
+
+    missing: List[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    for level in reversed(missing):
+        level.mkdir(exist_ok=True, mode=0o700)
+        try:
+            os.chmod(level, 0o700)
+        except OSError:
+            pass
+
+    if not missing:
+        # The leaf was already there; re-tighten it without touching its parents.
+        # mkdir still runs so a non-directory in the way raises as it did before.
+        directory.mkdir(exist_ok=True, mode=0o700)
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+
+
 def ensure_directories() -> None:
     """Create all required directories if they don't exist.
 
-    On POSIX systems, directories that contain sensitive data (cache,
-    logs, outputs) are created with mode 0o700 to restrict access to the
-    owning user.  On Windows, default NTFS ACLs apply; administrators
-    should tighten permissions via file-system ACLs as appropriate.
+    On POSIX systems, directories are created with mode 0o700 and existing
+    directories are re-tightened to 0o700 on every run, so checkouts that
+    ship placeholder directories still end up owner-only.  On Windows,
+    default NTFS ACLs apply; administrators should tighten permissions via
+    file-system ACLs as appropriate.
     """
-    _mode = 0o700 if sys.platform != "win32" else None
     directories = [
         INPUT_DIR,
         OUTPUT_MD_DIR,
@@ -255,10 +305,7 @@ def ensure_directories() -> None:
 
     for directory in directories:
         try:
-            if _mode is not None:
-                directory.mkdir(parents=True, exist_ok=True, mode=_mode)
-            else:
-                directory.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(directory)
         except OSError as e:
             logging.getLogger("document_converter").error("Cannot create directory %s: %s", directory, e)
 
@@ -524,7 +571,7 @@ def pdf_heavy_work_max_file_size_mb() -> int:
 # ============================================================================
 
 PDF_IMAGE_FORMAT = _runtime_setting("PDF_IMAGE_FORMAT", lambda: os.getenv("PDF_IMAGE_FORMAT", "png").strip().lower())
-PDF_IMAGE_DPI = _runtime_setting("PDF_IMAGE_DPI", lambda: _safe_int("PDF_IMAGE_DPI", 200, min_val=72))
+PDF_IMAGE_DPI = _runtime_setting("PDF_IMAGE_DPI", lambda: _safe_int("PDF_IMAGE_DPI", 200, min_val=72, max_val=600))
 PDF_IMAGE_THREAD_COUNT = _runtime_setting(
     "PDF_IMAGE_THREAD_COUNT", lambda: _safe_int("PDF_IMAGE_THREAD_COUNT", 4, min_val=1)
 )
@@ -534,6 +581,15 @@ PDF_IMAGE_USE_PDFTOCAIRO = _runtime_setting(
 # Additional PDF rendering cap. A value of 0 defers to the positive session
 # page cap, so rendering always retains a finite limit.
 PDF_IMAGE_MAX_PAGES = _runtime_setting("PDF_IMAGE_MAX_PAGES", lambda: _safe_int("PDF_IMAGE_MAX_PAGES", 100, min_val=0))
+# Upper bound on the render resolution, whoever supplies it. Poppler allocates
+# the raster before any Python image library sees it, so the ceiling has to be
+# applied before the render call.
+PDF_IMAGE_MAX_DPI = _runtime_setting("PDF_IMAGE_MAX_DPI", lambda: _safe_int("PDF_IMAGE_MAX_DPI", 600, min_val=72))
+# Largest rasterized page allowed, in pixels. Defaults to Pillow's
+# decompression-bomb threshold. A value of 0 removes the check.
+PDF_IMAGE_MAX_PIXELS_PER_PAGE = _runtime_setting(
+    "PDF_IMAGE_MAX_PIXELS_PER_PAGE", lambda: _safe_int("PDF_IMAGE_MAX_PIXELS_PER_PAGE", 178956970, min_val=0)
+)
 
 # ============================================================================
 # System Configuration

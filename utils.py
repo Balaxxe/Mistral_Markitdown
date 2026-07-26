@@ -138,6 +138,12 @@ def setup_logging(log_file: Optional[str] = None) -> logging.Logger:
         file_format = _TerminalSanitizingFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(file_format)
         logger.addHandler(file_handler)
+        # Logs can echo file names and OCR-derived text; keep them owner-only.
+        if sys.platform != "win32":
+            try:
+                Path(log_file).chmod(0o600)
+            except OSError:
+                pass
 
     return logger
 
@@ -295,7 +301,7 @@ class IntelligentCache:
             cache_dir: Directory to store cache files
         """
         self.cache_dir = cache_dir
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        config.ensure_private_dir(self.cache_dir)
         self._lock = threading.RLock()
         self.hits = 0
         self.misses = 0
@@ -1046,8 +1052,11 @@ def validate_file(file_path: Path, mode: Optional[str] = None) -> Tuple[bool, Op
     if not ok_path:
         return False, path_err
 
-    if file_path.stat().st_size == 0:
-        return False, f"File is empty: {file_path.name}"
+    try:
+        if file_path.stat().st_size == 0:
+            return False, f"File is empty: {file_path.name}"
+    except OSError as e:
+        return False, f"Cannot read file: {e}"
 
     # Check file extension against the correct set for the requested mode
     ext = file_path.suffix.lower().lstrip(".")

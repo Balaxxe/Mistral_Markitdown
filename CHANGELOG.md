@@ -15,7 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config.reload_settings()` for library embeds that change environment values after import; it refreshes every runtime setting, preserves process-environment precedence by default, and invalidates cached converter clients
 - `PDF_IMAGE_MAX_PAGES` (default 100) to bound local pdf2image rendering and reject capped conversions when the page count cannot be determined safely
 - `ENABLE_RETRIES` and `CLEANUP_UPLOAD_ALL_CONFIRM` configuration knobs
-- On-disk integration tests in `tests/test_integration_markitdown.py`
+- On-disk integration tests in `tests/test_integration_markitdown.py`, including unmocked MarkItDown conversions of text and HTML
+- `PDF_IMAGE_MAX_DPI` (default 600) and `PDF_IMAGE_MAX_PIXELS_PER_PAGE` (default 178,956,970, `0` disables) to bound what Poppler may rasterize before it allocates
+- `mistral_converter.discard_batch_page_reservation()` to return the session page credit of a batch JSONL that will not be submitted
+- `mistral_converter.session.register_pending_reservation_drain()` so an embedder can hand parked page credit back when `reset_session_page_counter()` runs
+- Cross-process lock file `cache/mistral_upload_registry.lock` (mode `0o600`) around every upload-registry update, with `tests/test_upload_registry_multiprocess.py` covering it
+- `tests/test_strict_path_admission.py` covering path admission on the Mistral-bound entry points under strict confinement
+- `pyright` in the `dev` extra, so `pip install .[dev]` is enough to run `make lint` and `make typecheck` (`make test` still bootstraps its own `env/` virtualenv from the requirements files)
+- Publish workflow step that fails before build or upload when the git tag is not `v` + the `pyproject.toml` version
 - Local Mistral upload registry (`cache/mistral_upload_registry.json`) and `CLEANUP_UPLOAD_SCOPE` (`registry` default / `all`) so maintenance cleanup does not delete unrelated Files API objects on shared keys
 - `cli_files.py` for input listing/selection/validation (breaks `modes.batch` ↔ `main` circular import)
 - `MISTRAL_ENABLE_LLM_DOC_CLASSIFICATION` (default false) to gate paid auto document classification
@@ -38,6 +45,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Secure defaults for `MISTRAL_BATCH_STRICT=true` and `STRICT_INPUT_PATH_RESOLUTION=true`; `MAX_BATCH_FILES` is now positive-only
+- `process_with_ocr`, `convert_with_mistral_ocr`, `query_document_file`, the Document QnA mode, and the OCR upload path now run `utils.validate_file` on the caller's path, so library callers get the same confinement, size, type, and regular-file checks as the CLI; `convert_with_mistral_ocr` validates before the cache lookup, so a cached entry cannot serve a path that would be refused
+- Document QnA uploads validate under the QnA size cap (`MISTRAL_QNA_MAX_FILE_SIZE_MB`) instead of the OCR cap, and the QnA mode reports the exact reason a file is refused before asking the first question
+- OCR tables, response metadata, and usage info are admitted through the shared structured-field budget before they are retained; an oversized field fails as a `parse_error` instead of being cached, and a response `model` name is kept only when it is text of at most 128 characters
+- Page dimensions now carry only finite numeric `dpi`, `height`, and `width` values; absent or non-numeric ones are left out rather than emitted as `null`, so consumers must read them with `.get`
+- Bounded OCR tables are built from a model's already-parsed fields, so field aliases and custom serializers are not applied; a table object with no `model_dump` is skipped with a debug line instead of failing the page
+- Every run now creates each missing directory level at `0o700`, intermediate parents included, and re-tightens a directory that already exists; the processing log file is set to `0o600`
+- Batch page estimates are committed when the job is submitted, not when the JSONL is written; every failed submit returns the credit, the CLI batch mode returns it in a `finally` block, re-creating a batch file at the same path replaces and releases the earlier estimate, and `reset_session_page_counter()` drains any credit still parked
+- The upload-registry file lock honours its 30-second timeout on POSIX as well as Windows: it retries without blocking and then degrades to an unlocked update instead of waiting forever
+- Registry-scoped `cleanup_uploaded_files` prunes entries with no file id again, and reports a failure to write the registry through `raise_on_error`
+- The PDF render pixel budget no longer multiplies by `UserUnit^2`, because Poppler ignores `/UserUnit` when it sizes output; the measure is page area in points x `(dpi / 72)^2`
+- The publish workflow's tag/version guard falls back to a regex over `pyproject.toml` when `tomllib` is missing, so it runs on the pinned Python 3.10 runner
+- `--test` is strictly an alias for `--mode status` and is rejected (exit code 2) when combined with any other conversion flag
+- `get_document_schema` and `get_bbox_schema` name and describe the fallback model when the schema type is unknown, instead of echoing the unknown name back; bbox `image`, `table`, and `chart` now have their own descriptions
+- A `PDF_IMAGE_DPI` environment value outside the fixed range `[72, 600]` falls back to the default 200; separately, the DPI that reaches PDF rendering is clamped into `[72, PDF_IMAGE_MAX_DPI]`, which has a minimum of 72 and no upper bound
+- `pyproject.toml` version raised to 3.1.0, matching the `config.VERSION` fallback. The 3.0.1 and 3.0.2 sections below were written but never tagged or published, so 3.1.0 is the next release and carries this work
+- Tests run with input-path confinement on by default; the old blanket relaxation in `tests/conftest.py` is now the opt-in `relax_strict_input_paths` fixture
 - Batch OCR and synchronous OCR share one process-wide reserved page budget; mode entry no longer resets already-consumed work
 - Interactive QnA defers upload until the first non-empty question and treats immediate exit, EOF, or Ctrl+C as a no-question failure
 - OCR session page-budget resets are skipped while reservations are active; PDFs with unknown page counts reserve the entire remaining active budget
@@ -66,12 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ui_print` sanitizes ANSI/C0 control characters in string arguments
 - Weak-page OCR improvement replaces the full page dict (not only `text`)
 - MarkItDown conversion returns a clean error on `OSError` from `stat()` (TOCTOU)
+- `utils.validate_file` returns an error instead of raising when a file vanishes or errors between its existence check and its size check
 - FormDates ISO `YYYY-MM-DD` patterns aligned with other schema date fields
 - `--mode qna` retry loop no longer triggers on benign messages containing the word "url" (e.g. `"Failed to resolve document URL"`), and always treats 401/Unauthorized as non-retryable
 - OCR response parsing and batch API errors now emit full tracebacks for unexpected failures instead of a truncated one-line `logger.error`
 - Upload cleanup fails closed for unknown scopes and accepts integer Unix timestamps returned by the Files API
 - Package reloads invalidate the cached Mistral client and reset idle session accounting without discarding active reservations
-- Batch result streams are closed even when output-directory or temporary-file setup fails
+- Batch result streams are closed even when output-directory or temporary-file setup fails, and `download_batch_results` reports a directory it cannot create instead of raising
 - OCR results are revalidated after weak-page improvement before images, cache entries, or Markdown are published
 - CSV table sidecars neutralize spreadsheet formulas; DNS lookup timeouts can be terminated cleanly
 
@@ -79,6 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `AGENTS.md` type-checking note now accurately describes `pyrightconfig.json` (`typeCheckingMode: basic`, select reports disabled) and points at `python3 -m pyright` / `make typecheck`
 - `README.md` and `KNOWN_ISSUES.md` cross-reference menu option 7 with `python3 main.py --mode status`
+- `CONFIGURATION.md` and `SECURITY.md` now separate the two uses of `MAX_PAGES_PER_SESSION`: a running budget for Mistral OCR and batch admission, and a per-document page ceiling for PDF rendering and table extraction that never draws the budget down
+- `README.md` names modes 1-4 as the concurrent ones instead of claiming every mode processes files concurrently
+- `ARCHITECTURE.md` module table lists the `modes/` package
 
 ## [3.0.2] - 2026-03-29
 
