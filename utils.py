@@ -1042,11 +1042,16 @@ def validate_file(file_path: Path, mode: Optional[str] = None) -> Tuple[bool, Op
     Returns:
         Tuple of (is_valid, error_message)
     """
-    if not file_path.exists():
-        return False, f"File does not exist: {file_path}"
+    # On Python < 3.13, Path.exists()/is_file() re-raise stat OSErrors that
+    # carry no recognized errno instead of returning False.
+    try:
+        if not file_path.exists():
+            return False, f"File does not exist: {file_path}"
 
-    if not file_path.is_file():
-        return False, f"Not a file: {file_path}"
+        if not file_path.is_file():
+            return False, f"Not a file: {file_path}"
+    except OSError as e:
+        return False, f"Cannot read file: {e}"
 
     ok_path, path_err = _resolved_path_under_input_dir(file_path)
     if not ok_path:
