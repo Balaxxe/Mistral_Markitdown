@@ -98,25 +98,31 @@ class TestRegistryLockTimeout:
 
     def test_acquisition_succeeds_once_the_peer_releases(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
-        monkeypatch.setattr(upload_module, "_UPLOAD_REGISTRY_LOCK_TIMEOUT", 5.0)
+        # Generous deadline, fast retries: the assertion is about eventual
+        # acquisition, not elapsed time, and CI runners stall unpredictably.
+        monkeypatch.setattr(upload_module, "_UPLOAD_REGISTRY_LOCK_TIMEOUT", 30.0)
+        monkeypatch.setattr(upload_module, "_UPLOAD_REGISTRY_LOCK_RETRY_INTERVAL", 0.02)
         lock_path = str(upload_module._upload_registry_lock_path())
 
         holder = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         contender = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        released = threading.Event()
+        release_errors = []
 
         def release_soon():
-            time.sleep(0.3)
-            upload_module.fcntl.flock(holder, upload_module.fcntl.LOCK_UN)
-            released.set()
+            try:
+                time.sleep(0.1)
+                upload_module.fcntl.flock(holder, upload_module.fcntl.LOCK_UN)
+            except BaseException as e:  # a silent release failure would look like a timeout
+                release_errors.append(e)
 
         try:
             upload_module.fcntl.flock(holder, upload_module.fcntl.LOCK_EX)
             waiter = threading.Thread(target=release_soon)
             waiter.start()
-            assert upload_module._acquire_registry_file_lock(contender) is True
-            assert released.is_set()
-            waiter.join(timeout=5)
+            acquired = upload_module._acquire_registry_file_lock(contender)
+            waiter.join(timeout=10)
+            assert not release_errors, f"peer release failed: {release_errors[0]!r}"
+            assert acquired is True
             upload_module._release_registry_file_lock(contender)
         finally:
             os.close(contender)
