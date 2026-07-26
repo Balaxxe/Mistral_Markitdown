@@ -53,6 +53,43 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
+      - name: Verify tag matches pyproject version
+        env:
+          GIT_REF: ${{ github.ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          try:
+              import tomllib
+          except ImportError:  # Python < 3.11
+              tomllib = None
+
+          ref = os.environ["GIT_REF"]
+          prefix = "refs/tags/"
+          if not ref.startswith(prefix):
+              sys.exit(f"Publish must run on a tag push, got {ref}")
+          tag = ref[len(prefix):]
+          if tomllib is not None:
+              with open("pyproject.toml", "rb") as handle:
+                  version = tomllib.load(handle)["project"]["version"]
+          else:
+              with open("pyproject.toml", "r", encoding="utf-8") as handle:
+                  text = handle.read()
+              project = re.search(r"^\[project\]\s*$(.*?)(?=^\[|\Z)", text, re.MULTILINE | re.DOTALL)
+              if project is None:
+                  sys.exit("pyproject.toml has no [project] table")
+              found = re.search(r'^version\s*=\s*"([^"]+)"\s*$', project.group(1), re.MULTILINE)
+              if found is None:
+                  sys.exit("pyproject.toml has no [project] version")
+              version = found.group(1)
+          if f"v{version}" != tag:
+              sys.exit(f"Tag {tag} does not match pyproject version {version} (expected v{version})")
+          print(f"Tag {tag} matches pyproject version {version}")
+          PY
+
       - name: Install build tools
         run: pip install build
 

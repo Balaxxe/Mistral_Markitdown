@@ -289,8 +289,9 @@ code block
 class TestFileValidation:
     """Test file validation functions."""
 
-    def test_validate_file_exists(self, tmp_path):
+    def test_validate_file_exists(self, tmp_path, monkeypatch):
         """Test validation of existing file."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         test_file = tmp_path / "test.pdf"
         test_file.write_text("content")
 
@@ -315,8 +316,9 @@ class TestFileValidation:
         assert not is_valid
         assert "empty" in error.lower()
 
-    def test_validate_file_unsupported_type(self, tmp_path):
+    def test_validate_file_unsupported_type(self, tmp_path, monkeypatch):
         """Test validation of unsupported file type."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         test_file = tmp_path / "test.xyz"
         test_file.write_text("content")
 
@@ -325,6 +327,7 @@ class TestFileValidation:
         assert "Unsupported" in error
 
     def test_validate_file_markitdown_rejects_over_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 1)
         test_file = tmp_path / "big.pdf"
         test_file.write_bytes(b"x" * (2 * 1024 * 1024))
@@ -334,6 +337,7 @@ class TestFileValidation:
 
     def test_validate_file_smart_uses_union_size_cap(self, tmp_path, monkeypatch):
         """Smart mode max size is max(MarkItDown, Mistral) so OCR-viable files are not rejected early."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 1)
         monkeypatch.setattr(config, "MISTRAL_OCR_MAX_FILE_SIZE_MB", 10)
         test_file = tmp_path / "mid.pdf"
@@ -362,6 +366,7 @@ class TestFileValidation:
 
     def test_validate_file_smart_txt_uses_markitdown_size_cap(self, tmp_path, monkeypatch):
         """Smart mode: types that only go through MarkItDown use MARKITDOWN cap, not OCR cap."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MARKITDOWN_MAX_FILE_SIZE_MB", 1)
         monkeypatch.setattr(config, "MISTRAL_OCR_MAX_FILE_SIZE_MB", 50)
         test_file = tmp_path / "huge.txt"
@@ -370,7 +375,8 @@ class TestFileValidation:
         assert ok is False
         assert err and "too large" in err.lower()
 
-    def test_validate_file_qna_accepts_mistral_extensions_only(self, tmp_path):
+    def test_validate_file_qna_accepts_mistral_extensions_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(b"%PDF")
         ok, err = utils.validate_file(pdf, mode="qna")
@@ -382,7 +388,8 @@ class TestFileValidation:
         assert ok2 is False
         assert err2 and "Unsupported" in err2
 
-    def test_validate_file_batch_ocr_matches_mistral_extensions(self, tmp_path):
+    def test_validate_file_batch_ocr_matches_mistral_extensions(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pptx = tmp_path / "s.pptx"
         pptx.write_bytes(b"PK\x03\x04")
         ok, err = utils.validate_file(pptx, mode="batch_ocr")
@@ -394,7 +401,8 @@ class TestFileValidation:
         assert ok2 is False
         assert err2 and "Unsupported" in err2
 
-    def test_validate_file_pdf_to_images_pdf_only(self, tmp_path):
+    def test_validate_file_pdf_to_images_pdf_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(b"%PDF")
         assert utils.validate_file(pdf, mode="pdf_to_images")[0] is True
@@ -933,7 +941,10 @@ class TestFileCacheGetStatisticsBody:
         cache.get(test_file, cache_type="test")  # hit
 
         stats = cache.get_statistics()
-        assert stats["total_entries"] >= 1
+        assert stats["total_entries"] == 1
+        assert stats["cache_hits"] == 1
+        assert stats["cache_misses"] == 0
+        assert stats["hit_rate"] == 100
         assert stats["total_size_mb"] > 0
 
 
@@ -1151,7 +1162,8 @@ class TestCacheGetEntryInvalidStructure:
         cache_path.write_text(json.dumps(["not", "a", "dict"]))
         result = cache.get_entry(test_file, cache_type="ocr")
         assert result is None
-        assert cache.misses >= 1
+        assert cache.misses == 1
+        assert cache.hits == 0
 
     def test_cache_entry_missing_data_key(self, tmp_path):
         cache = utils.IntelligentCache(cache_dir=tmp_path)

@@ -10,9 +10,14 @@ import pytest
 import config
 
 
-@pytest.fixture(autouse=True)
-def _relax_strict_input_path_resolution(monkeypatch):
-    """Keep tests on arbitrary temporary paths even if a local environment opts into confinement."""
+@pytest.fixture
+def relax_strict_input_paths(monkeypatch):
+    """Opt out of input-directory confinement for tests whose subject is permissive-path behavior.
+
+    Not autouse: the shipped default is confinement, so tests exercise that unless they ask
+    for this fixture. Tests that merely need a file outside the input tree should monkeypatch
+    ``config.INPUT_DIR`` to ``tmp_path`` instead.
+    """
     monkeypatch.setattr(config, "STRICT_INPUT_PATH_RESOLUTION", False)
 
 

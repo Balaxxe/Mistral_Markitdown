@@ -257,6 +257,11 @@ def query_document_file(
     if client is None:
         return False, None, "Mistral client not available"
 
+    is_valid, validation_message = utils.validate_file(file_path, mode="qna")
+    if not is_valid:
+        logger.warning("Rejected QnA request for %s: %s", file_path.name, validation_message)
+        return False, None, validation_message
+
     try:
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
         cap = config.MISTRAL_QNA_MAX_FILE_SIZE_MB
@@ -274,7 +279,7 @@ def query_document_file(
 
     try:
         # Upload file and get signed URL
-        signed_url = attr("upload_file_for_ocr")(client, file_path)
+        signed_url = attr("upload_file_for_ocr")(client, file_path, mode="qna")
         if not signed_url:
             return False, None, "Failed to upload file for QnA"
 

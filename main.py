@@ -602,8 +602,30 @@ def interactive_menu():  # pragma: no cover
 # ============================================================================
 
 
+_TEST_INCOMPATIBLE_FLAGS = (
+    ("mode", "--mode"),
+    ("no_interactive", "--no-interactive"),
+    ("batch_action", "--batch-action"),
+    ("batch_job_id", "--batch-job-id"),
+    ("qna_question", "--qna-question"),
+    ("qna_document_url", "--qna-document-url"),
+    ("qna_no_stream", "--qna-no-stream"),
+    ("stdin", "--stdin"),
+    ("stdin_filename", "--stdin-filename"),
+)
+
+
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Reject invalid CLI argument combinations."""
+    if args.test:
+        conflicting = [
+            flag
+            for dest, flag in _TEST_INCOMPATIBLE_FLAGS
+            if getattr(args, dest, None) and not (dest == "mode" and args.mode == "status")
+        ]
+        if conflicting:
+            joined = ", ".join(conflicting)
+            parser.error(f"--test cannot be combined with {joined} (--test is an alias for --mode status)")
     if args.stdin and args.mode != "markitdown":
         parser.error("--stdin can only be used with --mode markitdown")
     if args.stdin and not args.no_interactive:
@@ -751,6 +773,11 @@ Examples:
   python3 main.py --mode markitdown --no-interactive --stdin --stdin-filename report.pdf < report.pdf
   python3 main.py --mode batch_ocr --no-interactive --batch-action submit
   python3 main.py --test              # Test mode
+
+--test is an alias for --mode status and cannot be combined with any other
+conversion flag (--mode other than status, --no-interactive, --batch-action,
+--batch-job-id, --qna-question, --qna-document-url, --qna-no-stream, --stdin,
+--stdin-filename).
         """,
     )
 

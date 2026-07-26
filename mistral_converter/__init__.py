@@ -9,6 +9,7 @@ import importlib
 from . import sdk_shims as _sdk_shims
 from .batch import (
     create_batch_ocr_file,
+    discard_batch_page_reservation,
     download_batch_results,
     get_batch_job_status,
     list_batch_jobs,
@@ -126,6 +127,7 @@ __all__ = [
     "query_document_stream",
     "query_document_file",
     "create_batch_ocr_file",
+    "discard_batch_page_reservation",
     "submit_batch_ocr_job",
     "get_batch_job_status",
     "download_batch_results",

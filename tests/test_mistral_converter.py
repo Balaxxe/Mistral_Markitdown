@@ -10,6 +10,7 @@ Tests cover:
 """
 
 import importlib
+import os
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -370,6 +371,7 @@ class TestCommitSessionPages:
         client.ocr.process.assert_not_called()
 
     def test_ocr_rejects_actual_page_budget_overshoot_before_returning_result(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         import mistral_converter.ocr as ocr_module
 
         monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 1)
@@ -456,6 +458,7 @@ class TestSessionPageReservations:
 
     def test_ocr_commit_exception_does_not_release_a_later_reservation(self, monkeypatch, tmp_path):
         """An OCR commit exception cannot make ``finally`` release another worker's credit."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         import mistral_converter.ocr as ocr_module
 
         monkeypatch.setattr(config, "MAX_PAGES_PER_SESSION", 4)
@@ -542,10 +545,26 @@ class TestGetRetryConfig:
 
     def test_returns_config_when_retries_available(self, monkeypatch):
         monkeypatch.setattr(config, "MAX_RETRIES", 3)
+        monkeypatch.setattr(config, "ENABLE_RETRIES", True)
+        monkeypatch.setattr(config, "RETRY_INITIAL_INTERVAL_MS", 250)
+        monkeypatch.setattr(config, "RETRY_MAX_INTERVAL_MS", 5000)
+        monkeypatch.setattr(config, "RETRY_EXPONENT", 1.5)
+        monkeypatch.setattr(config, "RETRY_MAX_ELAPSED_TIME_MS", 30000)
+        monkeypatch.setattr(config, "RETRY_CONNECTION_ERRORS", True)
+        if mistral_converter.retries is None:
+            pytest.skip("Mistral SDK retries module not installed")
+
         result = mistral_converter.get_retry_config()
-        # Could be None if retries module not available, or a config object
-        # Just ensure no exception is raised
-        assert result is None or result is not None
+
+        assert result is not None
+        assert result.strategy == "backoff"
+        assert result.retry_connection_errors is True
+        backoff = result.backoff
+        assert backoff is not None
+        assert backoff.initial_interval == 250
+        assert backoff.max_interval == 5000
+        assert backoff.exponent == 1.5
+        assert backoff.max_elapsed_time == 30000
 
 
 # ============================================================================
@@ -832,6 +851,168 @@ class TestParseOcrResponse:
         # Should not raise
         result = mistral_converter._parse_ocr_response(response, tmp_path / "err.pdf")
         assert result["file_name"] == "err.pdf"
+
+
+class _StubTable:
+    """Pydantic-like table stub; MagicMock is deliberately avoided here."""
+
+    def __init__(self, table_id, content):
+        self.id = table_id
+        self.content = content
+
+    def model_dump(self):
+        return {"id": self.id, "content": self.content}
+
+
+class _StubDimensions:
+    def __init__(self, dpi, height, width):
+        self.dpi = dpi
+        self.height = height
+        self.width = width
+
+
+class _StubPage:
+    def __init__(self, markdown="Text", tables=None, dimensions=None):
+        self.markdown = markdown
+        self.index = 0
+        self.images = []
+        self.dimensions = dimensions
+        self.tables = tables
+        self.hyperlinks = None
+        self.header = None
+        self.footer = None
+
+
+def _empty_ocr_result():
+    return {
+        "pages": [],
+        "full_text": "",
+        "images": [],
+        "metadata": {},
+        "usage_info": {},
+        "model": None,
+    }
+
+
+class TestOcrStructuredFieldBounds:
+    """Tables, metadata, usage_info, and page dimensions are bounded before retention."""
+
+    def test_dict_path_oversized_table_content_rejected(self):
+        import mistral_converter.ocr as ocr_module
+
+        response = {
+            "pages": [
+                {
+                    "markdown": "Text",
+                    "tables": [{"id": "t1", "content": "A" * (2 * 1024 * 1024)}],
+                }
+            ]
+        }
+        with pytest.raises(ocr_module.OCRResponseLimitError, match="oversized string"):
+            ocr_module._parse_dict_response(response, _empty_ocr_result())
+
+    def test_object_path_oversized_table_content_rejected(self):
+        import mistral_converter.ocr as ocr_module
+
+        page = _StubPage(tables=[_StubTable("t1", "A" * (2 * 1024 * 1024))])
+        with pytest.raises(ocr_module.OCRResponseLimitError, match="oversized string"):
+            ocr_module._parse_page_object(page, 0, _empty_ocr_result())
+
+    def test_small_tables_retained(self):
+        import mistral_converter.ocr as ocr_module
+
+        table = {"id": "t1", "content": "| a |\n| - |"}
+        result = _empty_ocr_result()
+        ocr_module._parse_dict_response({"pages": [{"markdown": "Text", "tables": [table]}]}, result)
+        assert result["pages"][0]["tables"] == [table]
+
+        page_data = ocr_module._parse_page_object(
+            _StubPage(tables=[_StubTable("t1", "| a |\n| - |")]), 0, _empty_ocr_result()
+        )
+        assert page_data["tables"] == [table]
+
+    def test_table_object_without_model_dump_is_skipped_not_fatal(self):
+        import mistral_converter.ocr as ocr_module
+
+        class _OpaqueTable:
+            """A table the SDK hands over as an object with no dump helper."""
+
+            id = "t1"
+
+        page = _StubPage(tables=[_OpaqueTable(), _StubTable("t2", "| a |\n| - |")])
+        page_data = ocr_module._parse_page_object(page, 0, _empty_ocr_result())
+
+        assert page_data["tables"] == [{"id": "t2", "content": "| a |\n| - |"}]
+
+    def test_oversized_table_still_raises_when_model_dump_exists(self):
+        import mistral_converter.ocr as ocr_module
+
+        page = _StubPage(tables=[_StubTable("t1", "A" * (2 * 1024 * 1024))])
+        with pytest.raises(ocr_module.OCRResponseLimitError):
+            ocr_module._parse_page_object(page, 0, _empty_ocr_result())
+
+    def test_tables_charge_shared_structured_budget(self):
+        import mistral_converter.ocr as ocr_module
+
+        chunk = "A" * (1024 * 1024)
+        pages = [
+            {
+                "markdown": "Text",
+                "tables": [
+                    {"id": f"t{idx}a", "content": chunk},
+                    {"id": f"t{idx}b", "content": chunk},
+                ],
+            }
+            for idx in range(6)
+        ]
+        with pytest.raises(ocr_module.OCRResponseLimitError, match="structured fields exceed the aggregate byte limit"):
+            ocr_module._parse_dict_response({"pages": pages}, _empty_ocr_result())
+
+    def test_oversized_metadata_rejected(self):
+        import mistral_converter.ocr as ocr_module
+
+        response = {"metadata": {"blob": "A" * (2 * 1024 * 1024)}}
+        with pytest.raises(ocr_module.OCRResponseLimitError, match="oversized string"):
+            ocr_module._extract_response_metadata(response, _empty_ocr_result())
+
+    def test_oversized_usage_info_rejected(self):
+        import mistral_converter.ocr as ocr_module
+
+        response = {"usage_info": {"blob": "A" * (2 * 1024 * 1024)}}
+        with pytest.raises(ocr_module.OCRResponseLimitError, match="oversized string"):
+            ocr_module._extract_response_metadata(response, _empty_ocr_result())
+
+    def test_small_metadata_and_usage_info_retained(self):
+        import mistral_converter.ocr as ocr_module
+
+        response = {
+            "metadata": {"source": "test"},
+            "usage_info": {"pages_processed": 2},
+            "model": "mistral-ocr-latest",
+        }
+        result = _empty_ocr_result()
+        ocr_module._extract_response_metadata(response, result)
+        assert result["metadata"] == {"source": "test"}
+        assert result["usage_info"] == {"pages_processed": 2}
+        assert result["model"] == "mistral-ocr-latest"
+
+    def test_non_text_or_overlong_model_dropped(self):
+        import mistral_converter.ocr as ocr_module
+
+        result = _empty_ocr_result()
+        ocr_module._extract_response_metadata({"model": {"name": "x"}}, result)
+        assert result["model"] is None
+
+        result = _empty_ocr_result()
+        ocr_module._extract_response_metadata({"model": "m" * 5000}, result)
+        assert result["model"] is None
+
+    def test_non_numeric_page_dimensions_dropped(self):
+        import mistral_converter.ocr as ocr_module
+
+        page = _StubPage(dimensions=_StubDimensions(dpi="300", height=float("inf"), width=600))
+        page_data = ocr_module._parse_page_object(page, 0, _empty_ocr_result())
+        assert page_data["dimensions"] == {"width": 600}
 
 
 # ============================================================================
@@ -1144,11 +1325,12 @@ class TestCleanupUploadedFiles:
         files_response = MagicMock()
         files_response.data = [old_file]
         files_response.total = 1
-        mock_client.files.list.return_value = files_response
+        # Serve the page to the "ocr" purpose only; "batch" gets an empty page.
+        mock_client.files.list.side_effect = [files_response, MagicMock(data=[], total=0)]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=7)
-        assert count >= 1
-        mock_client.files.delete.assert_called()
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="file_old")
 
     def test_no_old_files(self, monkeypatch):
         from datetime import datetime, timezone
@@ -1199,6 +1381,7 @@ class TestUploadFileForOcr:
     """Test file upload for OCR."""
 
     def test_successful_pdf_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
 
@@ -1214,6 +1397,7 @@ class TestUploadFileForOcr:
         mock_client.files.upload.assert_called_once()
 
     def test_upload_with_image_preprocessing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_ENABLE_IMAGE_PREPROCESSING", True)
@@ -1231,6 +1415,7 @@ class TestUploadFileForOcr:
         assert result == "https://signed.url/img"
 
     def test_upload_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
 
@@ -1244,6 +1429,7 @@ class TestUploadFileForOcr:
         assert result is None
 
     def test_missing_signed_url(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
 
@@ -1259,6 +1445,7 @@ class TestUploadFileForOcr:
         mock_client.files.delete.assert_called_once_with(file_id="file_789")
 
     def test_signed_url_exception_deletes_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
 
@@ -1283,6 +1470,7 @@ class TestProcessWithOcr:
     """Test OCR processing pipeline."""
 
     def test_successful_pdf_processing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -1326,6 +1514,7 @@ class TestProcessWithOcr:
         assert "full_text" in result
 
     def test_upload_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
 
         pdf_file = tmp_path / "test.pdf"
@@ -1340,6 +1529,7 @@ class TestProcessWithOcr:
         assert "Failed to upload" in error
 
     def test_empty_response(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -1374,6 +1564,7 @@ class TestProcessWithOcr:
         assert "Empty response" in error
 
     def test_api_error_401(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -1408,6 +1599,7 @@ class TestProcessWithOcr:
         assert "authentication" in error.lower() or "401" in error
 
     def test_image_file_uses_image_chunk(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -1459,15 +1651,19 @@ class TestProcessWithOcr:
 class TestConvertWithMistralOcr:
     """Test full OCR conversion pipeline."""
 
-    def test_no_client(self, monkeypatch):
+    def test_no_client(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "MISTRAL_API_KEY", "")
+        pdf = tmp_path / "test.pdf"
+        pdf.write_bytes(b"%PDF")
         mistral_converter.reset_mistral_client()
-        ok, path, err = mistral_converter.convert_with_mistral_ocr(Path("test.pdf"))
+        ok, path, err = mistral_converter.convert_with_mistral_ocr(pdf)
         assert ok is False
         assert "not available" in err.lower()
         mistral_converter.reset_mistral_client()
 
     def test_cached_result(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
         monkeypatch.setattr(config, "SAVE_MISTRAL_JSON", False)
         monkeypatch.setattr(config, "ENABLE_OCR_QUALITY_ASSESSMENT", False)
@@ -1497,6 +1693,7 @@ class TestConvertWithMistralOcr:
 
     def test_cache_contract_mismatch_runs_ocr(self, tmp_path, monkeypatch):
         """Stale cache without matching contract metadata must not short-circuit OCR."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
         monkeypatch.setattr(config, "SAVE_MISTRAL_JSON", False)
         monkeypatch.setattr(config, "ENABLE_OCR_QUALITY_ASSESSMENT", False)
@@ -1530,7 +1727,32 @@ class TestConvertWithMistralOcr:
         assert ok is True
         mock_pw.assert_called_once()
 
-    def test_ocr_failure(self, tmp_path):
+    def test_rejects_out_of_tree_path_before_the_cache_lookup(self, tmp_path, monkeypatch):
+        """A seeded cache entry must not serve a path outside the input tree."""
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setattr(config, "INPUT_DIR", input_dir)
+        monkeypatch.setattr(config, "STRICT_INPUT_PATH_RESOLUTION", True)
+
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"%PDF")
+        cache_entry = {
+            "data": {"full_text": "cached", "pages": []},
+            "metadata": mistral_converter.build_mistral_ocr_cache_contract_metadata(),
+        }
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+            with patch("utils.cache.get_entry", return_value=cache_entry) as mock_cache:
+                with patch.object(mistral_converter, "process_with_ocr") as mock_ocr:
+                    ok, path, err = mistral_converter.convert_with_mistral_ocr(outside, use_cache=True)
+
+        assert (ok, path) == (False, None)
+        assert "input directory" in (err or "").lower()
+        mock_cache.assert_not_called()
+        mock_ocr.assert_not_called()
+
+    def test_ocr_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF")
 
@@ -2184,10 +2406,11 @@ class TestCleanupUploadedFilesFull:
         mock_response.total = 1
 
         mock_client = MagicMock()
-        mock_client.files.list.return_value = mock_response
+        mock_client.files.list.side_effect = [mock_response, MagicMock(data=[], total=0)]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=30)
-        assert count >= 1
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="file_old")
 
     def test_skips_recent_files(self):
         from datetime import datetime, timezone
@@ -2220,10 +2443,11 @@ class TestCleanupUploadedFilesFull:
         mock_response.total = 1
 
         mock_client = MagicMock()
-        mock_client.files.list.return_value = mock_response
+        mock_client.files.list.side_effect = [mock_response, MagicMock(data=[], total=0)]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=30)
-        assert count >= 1
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="file_dt")
 
     def test_pagination_stops_on_empty_page(self):
         mock_response_page1 = MagicMock()
@@ -2273,6 +2497,7 @@ class TestUploadFileForOcrFull:
     """Test file upload with image preprocessing, optimization, and signed URLs."""
 
     def test_pdf_upload_success(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
 
@@ -2293,6 +2518,7 @@ class TestUploadFileForOcrFull:
         assert result == "https://signed.example.com/doc"
 
     def test_image_upload_with_preprocessing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_SIGNED_URL_EXPIRY", 24)
         monkeypatch.setattr(config, "MISTRAL_ENABLE_IMAGE_PREPROCESSING", True)
@@ -2387,6 +2613,7 @@ class TestProcessWithOcrAdditional:
         monkeypatch.setattr(config, "MISTRAL_IMAGE_MIN_SIZE", 50)
 
     def test_with_progress_callback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         self._setup_monkeypatch(monkeypatch)
 
         pdf = tmp_path / "test.pdf"
@@ -2452,6 +2679,7 @@ class TestProcessWithOcrAdditional:
         assert len(progress_calls) > 0
 
     def test_with_provided_signed_url(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -2496,6 +2724,7 @@ class TestProcessWithOcrAdditional:
         assert success is True
 
     def test_with_ocr_id_and_pages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -2553,6 +2782,7 @@ class TestProcessWithOcrAdditional:
         assert call_kwargs["id"] == "task_123"
 
     def test_image_file_uses_chunk(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -2864,6 +3094,7 @@ class TestConvertWithMistralOcrPaths:
     """Test convert_with_mistral_ocr with cache disabled."""
 
     def test_no_cache_success(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "OUTPUT_MD_DIR", tmp_path)
         monkeypatch.setattr(config, "SAVE_MISTRAL_JSON", False)
         monkeypatch.setattr(config, "ENABLE_OCR_QUALITY_ASSESSMENT", False)
@@ -3235,10 +3466,11 @@ class TestCleanupUploadedFilesEdgeCases:
         mock_response.total = 1  # Total = 1, page_size default is typically large
 
         mock_client = MagicMock()
-        mock_client.files.list.return_value = mock_response
+        mock_client.files.list.side_effect = [mock_response, MagicMock(data=[], total=0)]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=30)
-        assert count >= 1
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="file_paged")
 
     def test_cleanup_by_purpose_pagination(self):
         """Line 540, 577-579: paginating through files by purpose."""
@@ -3264,14 +3496,13 @@ class TestCleanupUploadedFilesEdgeCases:
         page2.total = 2
 
         mock_client = MagicMock()
-        mock_client.files.list.side_effect = [
-            page1,
-            page2,  # ocr pages
-            MagicMock(data=[], total=0),  # batch purpose - empty
-        ]
+        # page1.total == 2 satisfies the first-page stop condition, so each purpose
+        # consumes exactly one page: page1 for "ocr", page2 for "batch".
+        mock_client.files.list.side_effect = [page1, page2]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=30)
-        assert count >= 1
+        assert count == 2
+        assert [call.kwargs["file_id"] for call in mock_client.files.delete.call_args_list] == ["f1", "f2"]
 
     def test_datetime_with_replace_naive(self):
         """Lines 547-550: created_at is datetime object with naive tz."""
@@ -3288,10 +3519,11 @@ class TestCleanupUploadedFilesEdgeCases:
         mock_response.total = 1
 
         mock_client = MagicMock()
-        mock_client.files.list.return_value = mock_response
+        mock_client.files.list.side_effect = [mock_response, MagicMock(data=[], total=0)]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=30)
-        assert count >= 1
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="file_naive_dt")
 
     def test_list_page_error_breaks_loop(self):
         """Line 540: when listing raises an error mid-pagination."""
@@ -3361,6 +3593,7 @@ class TestProcessWithOcrDocChunkFallback:
     """Lines 813-817: DocumentURLChunk is None dict fallback."""
 
     def test_document_url_dict_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -3421,6 +3654,7 @@ class TestProcessWithOcrAuthError:
     """Lines 875-881, 896-897: Auth and permission errors."""
 
     def test_401_unauthorized(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
 
         pdf = tmp_path / "test.pdf"
@@ -3457,6 +3691,7 @@ class TestProcessWithOcrAuthError:
 
     def test_empty_ocr_response(self, tmp_path, monkeypatch):
         """Line 898: empty response from OCR."""
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -4019,10 +4254,11 @@ class TestCleanupPaginationNoTotal:
         # No .total attribute (spec=[] restricts auto-creation)
 
         mock_client = MagicMock()
-        mock_client.files.list.return_value = mock_response
+        mock_client.files.list.side_effect = [mock_response, MagicMock(data=[], total=0)]
 
         count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=30)
-        assert count >= 1
+        assert count == 1
+        mock_client.files.delete.assert_called_once_with(file_id="f1")
 
     def test_pagination_page_increment(self):
         """Line 565: page += 1 when files_list has >= page_size items."""
@@ -4160,7 +4396,51 @@ class TestCleanupUploadRegistry:
         mock_client.files.delete.assert_called_once_with(file_id="no_ts")
         assert mistral_converter._load_upload_registry() == []
 
+    def test_registry_scope_prunes_entries_without_ids(self, monkeypatch, tmp_path):
+        import json
+        from datetime import datetime, timezone
+
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        registry_path = tmp_path / "mistral_upload_registry.json"
+        registry_path.write_text(
+            json.dumps(
+                [
+                    {"purpose": "ocr", "created_at": "2020-01-01T00:00:00+00:00"},
+                    {"id": "", "purpose": "batch"},
+                    {
+                        "id": "keep_me",
+                        "purpose": "ocr",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        mock_client = MagicMock()
+        count = mistral_converter.cleanup_uploaded_files(mock_client, days_old=7)
+
+        assert count == 0
+        mock_client.files.delete.assert_not_called()
+        # Malformed rows are pruned from disk even though nothing was deleted remotely.
+        on_disk = json.loads(registry_path.read_text(encoding="utf-8"))
+        assert [entry["id"] for entry in on_disk] == ["keep_me"]
+
+    def test_registry_write_failure_surfaces_with_raise_on_error(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "CLEANUP_UPLOAD_SCOPE", "registry")
+        monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
+        mistral_converter._save_upload_registry([{"id": "old_one", "purpose": "ocr"}])
+
+        mock_client = MagicMock()
+        with patch("mistral_converter.upload._save_upload_registry", return_value=False):
+            with pytest.raises(OSError, match="persist the upload registry"):
+                mistral_converter.cleanup_uploaded_files(mock_client, days_old=7, raise_on_error=True)
+
+        mock_client.files.delete.assert_called_once_with(file_id="old_one")
+
     def test_register_failure_deletes_remote_ocr_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", set())
         pdf = tmp_path / "doc.pdf"
         pdf.write_bytes(b"%PDF")
@@ -4180,6 +4460,7 @@ class TestProcessWithOcr403Error:
     """Lines 896-897: 403 Forbidden error from OCR API."""
 
     def test_403_forbidden(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
 
         pdf = tmp_path / "test.pdf"
@@ -4219,6 +4500,7 @@ class TestProcessWithOcrEmptyText:
     """Lines 875-881: OCR returns parseable but empty text."""
 
     def test_empty_text_response(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         monkeypatch.setattr(config, "IMAGE_EXTENSIONS", {"png", "jpg", "jpeg"})
         monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
         monkeypatch.setattr(config, "MISTRAL_DOCUMENT_ANNOTATION_PROMPT", "")
@@ -4724,3 +5006,92 @@ class TestDocumentClassificationRouting:
                 mistral_converter._ocr_shared_optional_params(file_path=Path("my_file.pdf"))
                 mock_classify.assert_not_called()
                 mock_fmt.assert_not_called()
+
+
+# ============================================================================
+# process_with_ocr / upload path confinement
+# ============================================================================
+
+
+class TestProcessWithOcrPathConfinement:
+    """process_with_ocr applies utils.validate_file before touching the file."""
+
+    @staticmethod
+    def _input_dir(tmp_path, monkeypatch, strict=True):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setattr(config, "STRICT_INPUT_PATH_RESOLUTION", strict)
+        monkeypatch.setattr(config, "INPUT_DIR", input_dir)
+        return input_dir
+
+    def test_rejects_file_outside_input_dir(self, tmp_path, monkeypatch):
+        self._input_dir(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"%PDF-1.4 content")
+        mock_client = MagicMock()
+
+        success, result, error = mistral_converter.process_with_ocr(mock_client, outside)
+
+        assert (success, result) == (False, None)
+        assert "input directory" in (error or "")
+        mock_client.ocr.process.assert_not_called()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_rejects_symlink_escaping_input_dir(self, tmp_path, monkeypatch):
+        input_dir = self._input_dir(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"%PDF-1.4 content")
+        link = input_dir / "link.pdf"
+        link.symlink_to(outside)
+        mock_client = MagicMock()
+
+        success, result, error = mistral_converter.process_with_ocr(mock_client, link)
+
+        assert (success, result) == (False, None)
+        assert "input directory" in (error or "")
+        mock_client.ocr.process.assert_not_called()
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+    def test_rejects_fifo_even_without_strict_resolution(self, tmp_path, monkeypatch):
+        input_dir = self._input_dir(tmp_path, monkeypatch, strict=False)
+        fifo = input_dir / "pipe.pdf"
+        os.mkfifo(fifo)
+        mock_client = MagicMock()
+
+        success, result, error = mistral_converter.process_with_ocr(mock_client, fifo)
+
+        assert (success, result) == (False, None)
+        assert "Not a file" in (error or "")
+        mock_client.ocr.process.assert_not_called()
+
+    def test_accepts_file_inside_input_dir(self, tmp_path, monkeypatch):
+        input_dir = self._input_dir(tmp_path, monkeypatch)
+        monkeypatch.setattr(config, "MISTRAL_INCLUDE_IMAGES", False)
+        pdf_file = input_dir / "test.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 content")
+
+        mock_page = MagicMock()
+        mock_page.markdown = "# Page 1 content"
+        mock_page.index = 0
+        mock_page.images = []
+        mock_response = MagicMock()
+        mock_response.pages = [mock_page]
+        mock_client = MagicMock()
+        mock_client.ocr.process.return_value = mock_response
+
+        with patch.object(mistral_converter, "upload_file_for_ocr", return_value="https://signed.url/doc"):
+            with patch.object(mistral_converter, "DocumentURLChunk", MagicMock()):
+                success, result, error = mistral_converter.process_with_ocr(mock_client, pdf_file)
+
+        assert (success, error) == (True, None)
+        assert "full_text" in result
+
+    def test_upload_helper_rejects_bad_path_when_entry_gates_are_bypassed(self, tmp_path, monkeypatch):
+        self._input_dir(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"%PDF-1.4 content")
+        mock_client = MagicMock()
+
+        assert mistral_converter.upload_file_for_ocr(mock_client, outside) is None
+        assert mistral_converter._upload_file_for_ocr_pair(mock_client, outside) is None
+        mock_client.files.upload.assert_not_called()

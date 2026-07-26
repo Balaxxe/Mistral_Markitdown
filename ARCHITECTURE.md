@@ -60,7 +60,8 @@ flowchart TD
 | `schemas.py`           | Pydantic models and JSON schemas for structured extraction (invoices, contracts, etc.)       |
 | `local_converter.py`   | MarkItDown wrapper, low-quality output detection, PDF table extraction, PDF to images        |
 | `mistral_converter/`   | Mistral package: client, upload, OCR, QnA, batch, image optimization, SSRF-safe URL validation (`url_validation.py`), and OCR response-budget enforcement (`resource_limits.py`) (`import mistral_converter`) |
-| `main.py`              | CLI entry point, smart routing, concurrent processing, interactive menu, system status       |
+| `main.py`              | CLI entry point, smart routing, concurrent processing, interactive menu, mode dispatch        |
+| `modes/`               | Non-conversion modes: batch OCR (`batch.py`), document QnA (`qna.py`), system status and maintenance (`system.py`) |
 | `cli_files.py`         | Input directory listing, validation, and interactive file selection                          |
 
 ## Data Flow

@@ -357,6 +357,9 @@ _DOCUMENT_DESCRIPTIONS = {
 }
 
 _BBOX_DESCRIPTIONS = {
+    "image": "Structured extraction of image content including image type, short description, and summary",
+    "table": "Structured extraction of table content including table type, caption, dimensions, and summary",
+    "chart": "Structured extraction of chart content including chart type, title, axis labels, and data summary",
     "structured": "Structured extraction of bounding box content with type and formatting",
 }
 
@@ -390,11 +393,12 @@ def get_document_schema(schema_type: str = "generic") -> Dict[str, Any]:
         if config.SCHEMA_STRICT_UNKNOWN_TYPES:
             raise ValueError(f"Unknown document schema type: {schema_type!r}")
         logger.warning("Unknown document schema type %r, falling back to 'generic'", schema_type)
-    model = _DOCUMENT_MODEL_MAP.get(schema_type, GenericDocument)
+    resolved = schema_type if schema_type in _DOCUMENT_MODEL_MAP else "generic"
+    model = _DOCUMENT_MODEL_MAP[resolved]
     return {
-        "name": f"{schema_type}_extraction",
+        "name": f"{resolved}_extraction",
         "schema": model.model_json_schema(),
-        "description": _DOCUMENT_DESCRIPTIONS.get(schema_type, _DOCUMENT_DESCRIPTIONS["generic"]),
+        "description": _DOCUMENT_DESCRIPTIONS[resolved],
     }
 
 
@@ -403,7 +407,7 @@ def get_bbox_schema(schema_type: str = "structured") -> Dict[str, Any]:
     Get a bounding box JSON schema by type, derived from Pydantic models.
 
     Args:
-        schema_type: Type of schema (currently only 'structured' available)
+        schema_type: Type of schema (image, table, chart, structured)
 
     Returns:
         Schema definition dictionary with name, schema, and description keys
@@ -412,11 +416,12 @@ def get_bbox_schema(schema_type: str = "structured") -> Dict[str, Any]:
         if config.SCHEMA_STRICT_UNKNOWN_TYPES:
             raise ValueError(f"Unknown bbox schema type: {schema_type!r}")
         logger.warning("Unknown bbox schema type %r, falling back to 'structured'", schema_type)
-    model = _BBOX_MODEL_MAP.get(schema_type, BBoxStructuredAnnotation)
+    resolved = schema_type if schema_type in _BBOX_MODEL_MAP else "structured"
+    model = _BBOX_MODEL_MAP[resolved]
     return {
-        "name": f"bbox_{schema_type}_extraction",
+        "name": f"bbox_{resolved}_extraction",
         "schema": model.model_json_schema(),
-        "description": _BBOX_DESCRIPTIONS.get(schema_type, _BBOX_DESCRIPTIONS["structured"]),
+        "description": _BBOX_DESCRIPTIONS[resolved],
     }
 
 

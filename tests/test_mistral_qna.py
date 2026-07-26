@@ -1,6 +1,7 @@
 """Tests for Mistral Document QnA helpers (query_document, stream,
 query_document_file). Split out of test_mistral_converter.py for navigability."""
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -113,7 +114,8 @@ class TestQueryDocumentStream:
 class TestQueryDocumentFile:
     """Test file-based document QnA."""
 
-    def test_no_client(self, tmp_path):
+    def test_no_client(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF")
 
@@ -121,7 +123,8 @@ class TestQueryDocumentFile:
             ok, answer, err = mistral_converter.query_document_file(pdf, "what?")
         assert ok is False
 
-    def test_file_too_large(self, tmp_path):
+    def test_file_too_large(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         cap = config.MISTRAL_QNA_MAX_FILE_SIZE_MB
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"x" * ((cap + 1) * 1024 * 1024))
@@ -131,7 +134,8 @@ class TestQueryDocumentFile:
         assert ok is False
         assert "too large" in err.lower()
 
-    def test_upload_failure(self, tmp_path):
+    def test_upload_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF small file")
 
@@ -141,7 +145,19 @@ class TestQueryDocumentFile:
         assert ok is False
         assert "upload" in err.lower()
 
-    def test_successful_query(self, tmp_path):
+    def test_upload_runs_under_qna_validation_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+        pdf = tmp_path / "test.pdf"
+        pdf.write_bytes(b"%PDF small file")
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+            with patch.object(mistral_converter, "upload_file_for_ocr", return_value=None) as mock_upload:
+                mistral_converter.query_document_file(pdf, "what?")
+
+        assert mock_upload.call_args.kwargs["mode"] == "qna"
+
+    def test_successful_query(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF small content")
         mock_choice = MagicMock()
@@ -160,6 +176,7 @@ class TestQueryDocumentFile:
         assert answer == "The answer is 42"
 
     def test_custom_server_keeps_uploaded_file_qna_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF small content")
         monkeypatch.setattr(config, "MISTRAL_SERVER_URL", "https://private-api.example")
@@ -417,13 +434,15 @@ class TestQueryDocumentStreamFull:
 class TestQueryDocumentFileFull:
     """Test file-based QnA additional paths."""
 
-    def test_file_not_readable(self, tmp_path):
+    def test_file_not_readable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "nonexistent.pdf"
         with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
             ok, answer, err = mistral_converter.query_document_file(pdf, "what?")
         assert ok is False
 
-    def test_exception_during_upload(self, tmp_path):
+    def test_exception_during_upload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
         pdf = tmp_path / "test.pdf"
         pdf.write_bytes(b"%PDF small")
 
@@ -440,3 +459,100 @@ class TestQueryDocumentFileFull:
 # ============================================================================
 # create_batch_ocr_file - full coverage
 # ============================================================================
+
+
+# ============================================================================
+# query_document_file path confinement
+# ============================================================================
+
+
+class TestQueryDocumentFilePathConfinement:
+    """query_document_file applies utils.validate_file before uploading."""
+
+    @staticmethod
+    def _input_dir(tmp_path, monkeypatch, strict=True):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setattr(config, "STRICT_INPUT_PATH_RESOLUTION", strict)
+        monkeypatch.setattr(config, "INPUT_DIR", input_dir)
+        return input_dir
+
+    def test_rejects_file_outside_input_dir(self, tmp_path, monkeypatch):
+        self._input_dir(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"%PDF small")
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+            with patch.object(mistral_converter, "upload_file_for_ocr") as mock_upload:
+                ok, answer, err = mistral_converter.query_document_file(outside, "what?")
+
+        assert (ok, answer) == (False, None)
+        assert "input directory" in (err or "")
+        mock_upload.assert_not_called()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_rejects_symlink_escaping_input_dir(self, tmp_path, monkeypatch):
+        input_dir = self._input_dir(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"%PDF small")
+        link = input_dir / "link.pdf"
+        link.symlink_to(outside)
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+            with patch.object(mistral_converter, "upload_file_for_ocr") as mock_upload:
+                ok, answer, err = mistral_converter.query_document_file(link, "what?")
+
+        assert (ok, answer) == (False, None)
+        assert "input directory" in (err or "")
+        mock_upload.assert_not_called()
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+    def test_rejects_fifo_even_without_strict_resolution(self, tmp_path, monkeypatch):
+        input_dir = self._input_dir(tmp_path, monkeypatch, strict=False)
+        fifo = input_dir / "pipe.pdf"
+        os.mkfifo(fifo)
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=MagicMock()):
+            with patch.object(mistral_converter, "upload_file_for_ocr") as mock_upload:
+                ok, answer, err = mistral_converter.query_document_file(fifo, "what?")
+
+        assert (ok, answer) == (False, None)
+        assert "Not a file" in (err or "")
+        mock_upload.assert_not_called()
+
+    def test_accepts_file_inside_input_dir(self, tmp_path, monkeypatch):
+        input_dir = self._input_dir(tmp_path, monkeypatch)
+        pdf = input_dir / "test.pdf"
+        pdf.write_bytes(b"%PDF small content")
+        mock_choice = MagicMock()
+        mock_choice.message.content = "answer"
+        mock_client = MagicMock()
+        mock_client.chat.complete.return_value = MagicMock(choices=[mock_choice])
+
+        with patch.object(mistral_converter, "get_mistral_client", return_value=mock_client):
+            with patch.object(mistral_converter, "upload_file_for_ocr", return_value="https://signed.url/doc"):
+                ok, answer, err = mistral_converter.query_document_file(pdf, "what?")
+
+        assert (ok, answer, err) == (True, "answer", None)
+
+
+class TestUploadValidationMode:
+    """The upload layer must validate under the caller's own mode."""
+
+    def test_qna_mode_accepts_a_file_over_the_ocr_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "INPUT_DIR", tmp_path)
+        monkeypatch.setattr(config, "MISTRAL_OCR_MAX_FILE_SIZE_MB", 1)
+        monkeypatch.setattr(config, "MISTRAL_QNA_MAX_FILE_SIZE_MB", 8)
+        pdf = tmp_path / "big.pdf"
+        pdf.write_bytes(b"%PDF" + b"x" * (2 * 1024 * 1024))
+
+        client = MagicMock()
+        client.files.upload.return_value = MagicMock(id="file_qna")
+        client.files.get_signed_url.return_value = MagicMock(url="https://signed.example/doc")
+
+        with patch.object(mistral_converter, "_register_uploaded_file", return_value=True):
+            refused = mistral_converter._upload_file_for_ocr_pair(client, pdf)
+            accepted = mistral_converter._upload_file_for_ocr_pair(client, pdf, mode="qna")
+
+        assert refused is None
+        assert accepted == ("https://signed.example/doc", "file_qna")

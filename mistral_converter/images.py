@@ -31,7 +31,7 @@ _MAX_EXTRACTED_IMAGES_TOTAL_DECODED_BYTES = MAX_EXTRACTED_IMAGES_TOTAL_DECODED_B
 
 def _new_image_temp_path(image_path: Path, operation: str) -> Path:
     """Create a private, invocation-owned derived-image path in the cache."""
-    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    config.ensure_private_dir(config.CACHE_DIR)
     fd, raw_path = tempfile.mkstemp(
         prefix=f"mistral_{operation}_",
         suffix=image_path.suffix or ".img",
@@ -254,7 +254,7 @@ def save_extracted_images(ocr_result: Dict[str, Any], file_path: Path, *, fail_o
         return []
 
     image_dir = config.OUTPUT_IMAGES_DIR / f"{utils.safe_output_stem(file_path)}_ocr"
-    image_dir.mkdir(parents=True, exist_ok=True)
+    config.ensure_private_dir(image_dir)
     saved_images: List[Path] = []
     try:
         for image_count, (page_num, image_data) in enumerate(prepared, 1):

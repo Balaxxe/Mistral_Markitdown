@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mistral-markitdown"
-version = "3.0.0"
+version = "3.1.0"
 description = "Enhanced Document Converter with MarkItDown and Mistral AI OCR"
 readme = "README.md"
 requires-python = ">=3.10,<4"
@@ -44,6 +44,7 @@ dev = [
     "flake8>=7.3",
     "black>=26.3",
     "isort>=8.0",
+    "pyright>=1.1",
     "pip-audit>=2.0.0",
     "bandit>=1.7.0",
     "pre-commit>=4.5",

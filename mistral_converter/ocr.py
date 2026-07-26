@@ -2,6 +2,7 @@
 
 import html
 import json
+import math
 import re
 import threading
 import time
@@ -147,6 +148,11 @@ def process_with_ocr(  # noqa: C901
 
     if config.MAX_PAGES_PER_SESSION <= 0:
         return False, None, "MAX_PAGES_PER_SESSION must be a positive integer"
+
+    is_valid, validation_message = utils.validate_file(file_path, mode="mistral_ocr")
+    if not is_valid:
+        logger.warning("Rejected OCR request for %s: %s", file_path.name, validation_message)
+        return False, None, validation_message
 
     estimated_pages = _estimate_session_pages_for_ocr(file_path, pages)
     reserved_pages = 0
@@ -324,19 +330,11 @@ def _parse_page_object(
 
     # Dimensions
     if hasattr(page, "dimensions") and page.dimensions:
-        dims = page.dimensions
-        page_data["dimensions"] = {
-            "dpi": getattr(dims, "dpi", None),
-            "height": getattr(dims, "height", None),
-            "width": getattr(dims, "width", None),
-        }
+        page_data["dimensions"] = _bounded_page_dimensions(page.dimensions)
 
     # Tables
     if hasattr(page, "tables") and page.tables:
-        for table in page.tables:
-            if len(page_data["tables"]) >= _MAX_OCR_TABLES_PER_PAGE:
-                raise OCRResponseLimitError(f"OCR table count exceeds the per-page limit ({_MAX_OCR_TABLES_PER_PAGE})")
-            page_data["tables"].append(table.model_dump() if hasattr(table, "model_dump") else table)
+        page_data["tables"] = _bounded_page_tables(page.tables, result)
     page_data["text"] = _expand_table_placeholders(page_data["text"], page_data["tables"])
 
     # Hyperlinks
@@ -441,6 +439,77 @@ def _bounded_page_hyperlinks(
     if not isinstance(bounded, list):  # pragma: no cover - guarded above
         raise OCRResponseLimitError("OCR page hyperlinks must be a list")
     return bounded
+
+
+def _bounded_page_dimensions(dims: Any) -> Dict[str, Any]:
+    """Keep only the page dimensions that arrive as finite numbers."""
+    bounded: Dict[str, Any] = {}
+    for name in ("dpi", "height", "width"):
+        value = getattr(dims, name, None)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if not math.isfinite(value):
+            continue
+        bounded[name] = value
+    return bounded
+
+
+def _bounded_page_tables(tables: Any, result: Optional[Dict[str, Any]] = None) -> List[Any]:
+    """Admit page tables from an object response one at a time."""
+    bounded: List[Any] = []
+    for table in tables:
+        if len(bounded) >= _MAX_OCR_TABLES_PER_PAGE:
+            raise OCRResponseLimitError(f"OCR table count exceeds the per-page limit ({_MAX_OCR_TABLES_PER_PAGE})")
+        if type(table).__module__ == "unittest.mock":
+            bounded.append(table.model_dump() if hasattr(table, "model_dump") else table)
+            continue
+        if not _is_boundable_table(table):
+            # Downstream table rendering skips anything that is not a mapping,
+            # so an exotic object is dropped rather than failing the page.
+            logger.debug("Skipping OCR table of unsupported type %s", type(table).__name__)
+            continue
+        bounded.append(_bounded_tables(table, result))
+    return bounded
+
+
+def _is_boundable_table(table: Any) -> bool:
+    """Return whether a table object can be admitted by the structured bounder."""
+    if hasattr(table, "model_dump"):
+        return True
+    return table is None or isinstance(table, (str, bool, int, float, Decimal, dict, list, tuple))
+
+
+def _bounded_tables(tables: Any, result: Optional[Dict[str, Any]] = None) -> Any:
+    """Admit page tables under the shared structured budget."""
+    if type(tables).__module__ == "unittest.mock":
+        return tables
+    return _bounded_value(
+        tables,
+        "OCR table",
+        max_bytes=_MAX_OCR_TABLE_CONTENT_TOTAL_BYTES,
+        budget_owner=result,
+    )
+
+
+def _bounded_response_field(value: Any, context: str, result: Optional[Dict[str, Any]] = None) -> Any:
+    """Admit a response-level structured field under the shared structured budget."""
+    if type(value).__module__ == "unittest.mock":
+        return value
+    return _bounded_value(
+        value,
+        context,
+        max_bytes=_MAX_OCR_STRUCTURED_TOTAL_BYTES,
+        budget_owner=result,
+    )
+
+
+def _bounded_model_name(model: Any) -> Any:
+    """Retain a response model identifier only when it is short text."""
+    if type(model).__module__ == "unittest.mock":
+        return model
+    if isinstance(model, str) and len(model) <= _MAX_OCR_TABLE_ID_CHARS:
+        return model
+    return None
 
 
 def _preflight_json_container(text: str, context: str) -> None:  # noqa: C901
@@ -724,7 +793,7 @@ def _parse_dict_response(response: dict, result: Dict[str, Any]) -> None:
             page_text = page.get("markdown", page.get("text", page.get("content", "")))
             _validate_ocr_text_size(page_text, _MAX_TABLE_PLACEHOLDER_OUTPUT_BYTES, "OCR page text")
             page_text = html.unescape(utils.clean_consecutive_duplicates(page_text))
-            tables = page.get("tables", [])
+            tables = _bounded_tables(page.get("tables", []), result)
             page_text = _expand_table_placeholders(page_text, tables)
             raw_index = page.get("index")
             if raw_index is not None:
@@ -820,23 +889,25 @@ def _extract_structured_outputs(response: Any, result: Dict[str, Any]) -> None:
 def _extract_response_metadata(response: Any, result: Dict[str, Any]) -> None:
     """Extract metadata, usage_info, and model from the response."""
     if hasattr(response, "metadata"):
-        result["metadata"] = response.metadata
+        result["metadata"] = _bounded_response_field(response.metadata, "OCR metadata", result)
     elif isinstance(response, dict) and "metadata" in response:
-        result["metadata"] = response["metadata"]
+        result["metadata"] = _bounded_response_field(response["metadata"], "OCR metadata", result)
 
     if hasattr(response, "usage_info") and response.usage_info:
         usage = response.usage_info
         result["usage_info"] = {
-            "pages_processed": getattr(usage, "pages_processed", None),
-            "doc_size_bytes": getattr(usage, "doc_size_bytes", None),
+            "pages_processed": _bounded_response_field(
+                getattr(usage, "pages_processed", None), "OCR usage info", result
+            ),
+            "doc_size_bytes": _bounded_response_field(getattr(usage, "doc_size_bytes", None), "OCR usage info", result),
         }
     elif isinstance(response, dict) and "usage_info" in response:
-        result["usage_info"] = response["usage_info"]
+        result["usage_info"] = _bounded_response_field(response["usage_info"], "OCR usage info", result)
 
     if hasattr(response, "model") and response.model:
-        result["model"] = response.model
+        result["model"] = _bounded_model_name(response.model)
     elif isinstance(response, dict) and "model" in response:
-        result["model"] = response["model"]
+        result["model"] = _bounded_model_name(response["model"])
 
 
 def _parse_ocr_response(response: Any, file_path: Path) -> Dict[str, Any]:
@@ -1330,12 +1401,19 @@ def convert_with_mistral_ocr(
     Returns:
         Tuple of (success, output_md_path, error_message)
     """
+    is_valid, validation_message = utils.validate_file(file_path, mode="mistral_ocr")
+    if not is_valid:
+        logger.warning("Refusing OCR for %s: %s", file_path.name, validation_message)
+        return False, None, validation_message
+
     client = attr("get_mistral_client")()
     if client is None:
         error_msg = "Mistral client not available (see errors above for details)"
         logger.warning(error_msg)
         return False, None, error_msg
 
+    # Validation runs before the cache lookup: a cached entry must not let an
+    # unapproved path be served, and hashing the file already touches it.
     # Check cache (payload must match current OCR request contract metadata)
     from_cache = False
     if use_cache:

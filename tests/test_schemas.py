@@ -34,6 +34,14 @@ class TestGetDocumentSchema:
         result = schemas.get_document_schema("nonexistent_type")
         assert isinstance(result, dict)
 
+    def test_unknown_type_name_matches_fallback(self, monkeypatch):
+        monkeypatch.setattr(config, "SCHEMA_STRICT_UNKNOWN_TYPES", False)
+        result = schemas.get_document_schema("nonexistent_type")
+        fallback = schemas.get_document_schema("generic")
+        assert result["name"] == fallback["name"]
+        assert result["description"] == fallback["description"]
+        assert result["schema"] == fallback["schema"]
+
     def test_unknown_type_raises_when_strict(self, monkeypatch):
         monkeypatch.setattr(config, "SCHEMA_STRICT_UNKNOWN_TYPES", True)
         with pytest.raises(ValueError, match="Unknown document schema type"):
@@ -67,6 +75,21 @@ class TestGetBboxSchema:
         assert "schema" in result
         assert "name" in result
 
+    @pytest.mark.parametrize("schema_type", ["image", "table", "chart"])
+    def test_known_types_have_own_description(self, schema_type: str):
+        result = schemas.get_bbox_schema(schema_type)
+        assert result["name"] == f"bbox_{schema_type}_extraction"
+        assert schema_type in result["description"].lower()
+        assert result["description"] != schemas.get_bbox_schema("structured")["description"]
+
+    def test_unknown_type_name_matches_fallback(self, monkeypatch):
+        monkeypatch.setattr(config, "SCHEMA_STRICT_UNKNOWN_TYPES", False)
+        result = schemas.get_bbox_schema("nonexistent_type")
+        fallback = schemas.get_bbox_schema("structured")
+        assert result["name"] == fallback["name"]
+        assert result["description"] == fallback["description"]
+        assert result["schema"] == fallback["schema"]
+
 
 # ============================================================================
 # Pydantic Model Tests
@@ -78,27 +101,40 @@ class TestPydanticModels:
 
     def test_bbox_pydantic_model_returns_class(self):
         model = schemas.get_bbox_pydantic_model()
-        # Should return a Pydantic model class or None
-        if model is not None:
-            # Should be able to generate a JSON schema
-            json_schema = model.model_json_schema()
-            assert isinstance(json_schema, dict)
-            assert "properties" in json_schema or "type" in json_schema
+
+        assert model is schemas.BBoxStructuredAnnotation
+        json_schema = model.model_json_schema()
+        assert set(json_schema["required"]) == {"bbox_type", "text_content"}
+        assert set(json_schema["properties"]) >= {
+            "bbox_type",
+            "text_content",
+            "confidence",
+            "is_handwritten",
+            "language",
+        }
 
     @pytest.mark.parametrize(
-        "doc_type",
-        ["invoice", "generic", "financial_statement", "contract", "form"],
+        ("doc_type", "expected_model", "expected_required"),
+        [
+            ("invoice", schemas.InvoiceDocument, {"document_type", "vendor", "invoice_details", "totals"}),
+            ("generic", schemas.GenericDocument, None),
+            ("financial_statement", schemas.FinancialStatementDocument, None),
+            ("contract", schemas.ContractDocument, None),
+            ("form", schemas.FormDocument, None),
+        ],
     )
-    def test_document_pydantic_model_returns_class(self, doc_type: str):
+    def test_document_pydantic_model_returns_class(self, doc_type, expected_model, expected_required):
         model = schemas.get_document_pydantic_model(doc_type)
-        if model is not None:
-            json_schema = model.model_json_schema()
-            assert isinstance(json_schema, dict)
 
-    def test_unknown_document_type_returns_none_or_generic(self):
-        model = schemas.get_document_pydantic_model("nonexistent")
-        # Should return None or fall back to generic
-        assert model is None or hasattr(model, "model_json_schema")
+        assert model is expected_model
+        json_schema = model.model_json_schema()
+        assert json_schema["properties"]
+        if expected_required is not None:
+            assert set(json_schema["required"]) == expected_required
+
+    def test_unknown_document_type_falls_back_to_generic(self, monkeypatch):
+        monkeypatch.setattr(config, "SCHEMA_STRICT_UNKNOWN_TYPES", False)
+        assert schemas.get_document_pydantic_model("nonexistent") is schemas.GenericDocument
 
 
 # ============================================================================

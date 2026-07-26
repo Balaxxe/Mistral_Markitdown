@@ -84,6 +84,7 @@ def _batch_submit(file_paths: List[Path], *, non_interactive: bool) -> Tuple[boo
         return False, f"Failed to submit batch job: {error}"
     finally:
         if batch_file is not None:
+            mistral_converter.discard_batch_page_reservation(batch_file)
             batch_file.unlink(missing_ok=True)
 
 
