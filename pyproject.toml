@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "markitdown[all]==0.1.6",
+    "markitdown[all]==0.1.7",
     "mistralai==2.7.1",
     "python-dotenv==1.2.2",
     "pydantic>=2,<3",
