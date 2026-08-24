@@ -9,7 +9,7 @@ markitdown[all]==0.1.6
 mistralai==2.7.1
 
 # Core: Load .env configuration
-python-dotenv==1.2.2
+python-dotenv==1.2.3
 
 # Data validation (used by schemas.py)
 pydantic>=2,<3
