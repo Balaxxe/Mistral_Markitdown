@@ -15,7 +15,7 @@ You MUST consider the user input before proceeding if it is not empty.
 
 ## Goal
 
-Design a behavior-preserving refactor plan for the selected code, current file, or user-specified target.
+Design a behavior-preserving refactor plan for the user-specified target, selected code, or current file.
 
 Do not modify files. This command plans only.
 
@@ -23,9 +23,9 @@ Do not modify files. This command plans only.
 
 Use this order:
 
-1. Selected code, if present
-2. Current active file
-3. A file, module, symbol, or refactor goal named in `$ARGUMENTS`
+1. A file, module, symbol, or refactor goal named in `$ARGUMENTS`
+2. Selected code, if present
+3. Current active file
 4. Relevant callers, dependencies, and tests only as needed to plan safely
 
 If the target cannot be inferred, say `No refactor target was available.` and stop.

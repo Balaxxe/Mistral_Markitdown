@@ -41,7 +41,8 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 - Preserve public APIs unless the task says otherwise.
 - Reuse existing patterns/utilities before adding abstractions.
 - Add/update tests for behavior changes.
-- Ask first before changing schema, auth, CI, infra, or dependencies.
+- An explicit request authorizes the local edits and relevant validation needed to complete it. Ask before materially expanding the scope or causing an external or irreversible effect.
+- Ask first before changing schema, auth, CI, infra, or dependencies when the request does not explicitly cover that change.
 - Never commit secrets or edit generated/vendor files casually.
 - Use `python3 -m <tool>` instead of bare commands when not in a virtualenv.
 
@@ -50,7 +51,7 @@ Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf
 - Python: 3.10, 3.11, or 3.12
 - System deps: `poppler-utils` (needed by pdf2image)
 - Setup: `pip install -r requirements.txt && pip install -r requirements-dev.txt`
-- Config: copy `.env.example` to `.env`; `MISTRAL_API_KEY` is optional for local conversion and non-cloud modes
+- Config: if `.env` is absent, copy `.env.example` to it; preserve existing settings. `MISTRAL_API_KEY` is optional for local conversion and non-cloud modes.
 
 ## Debugging
 

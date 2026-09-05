@@ -15,7 +15,7 @@ You MUST consider the user input before proceeding if it is not empty.
 
 ## Goal
 
-Review the selected code, current file, or user-specified target and produce a concise, actionable review.
+Review the user-specified target, selected code, or current file and produce a concise, actionable review.
 
 Do not modify files or apply fixes. This command reviews only.
 
@@ -23,9 +23,9 @@ Do not modify files or apply fixes. This command reviews only.
 
 Use this order:
 
-1. If a code selection is present, review that selection first.
-2. Otherwise review the current active file.
-3. Otherwise, if `$ARGUMENTS` names a file, symbol, or review focus, use that.
+1. If `$ARGUMENTS` names a file, symbol, or review focus, use that.
+2. Otherwise, review a code selection if present.
+3. Otherwise, review the current active file.
 4. Read neighboring definitions, callers, and tests only as needed.
 
 If no selection, active file, or identifiable target is available, say `No selection or active file was available to review.` and stop.
@@ -72,10 +72,15 @@ Use these severity labels only: `blocker`, `high`, `medium`, `low`, `nit`.
 - List the most important missing test scenarios.
 - If coverage looks adequate, say `No major test gaps noted`.
 
-## Approval Summary
-Choose exactly one:
+## Review Outcome
+For a complete change or PR review, choose exactly one:
 - `Ready to merge`
 - `Mergeable with follow-ups`
 - `Needs changes before merge`
 
 Then add 2 to 4 bullets explaining the decision.
+
+For a selection, file, or other partial scope, use:
+- `Scope reviewed; merge readiness not assessed`
+
+Then state whether the reviewed scope has findings and which broader checks were not performed.
