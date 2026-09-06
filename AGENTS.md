@@ -1,103 +1,34 @@
-# Mistral Markitdown
+# Mistral MarkItDown guide
 
-> **These instructions apply ONLY to the `Mistral_Markitdown` repository.** In a
-> multi-root workspace, ignore this file when working in any other repo.
+This repository contains a Python document converter. Make the smallest safe
+change that completes the request, preserve public behavior unless requested,
+and validate the changed behavior proportionately.
 
-Stack: Python 3.10–3.12, MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf2image
+## Always preserve
 
-## Commands
+- Do not commit API keys, tokens, credentials, or generated/vendor artifacts.
+- Preserve `.env`; copy `.env.example` only when the file is absent.
+- Keep API validation and SSRF protections intact. Use `python3 -m <tool>`
+  when no virtual environment is active.
+- An explicit request authorizes the needed local edit and relevant validation.
+  Ask before an unrequested external, destructive, irreversible, or material
+  scope expansion.
 
-- Install: `pip install -r requirements.txt`
-- Install dev: `pip install -r requirements.txt && pip install -r requirements-dev.txt`
-- Test all: `python3 -m pytest tests/` after dev install, or `bash scripts/test-safe.sh`, or `python3 run_tests.py` (bootstraps `./env` + dev deps if pytest is missing)
-- Test single file: `python3 -m pytest tests/test_<name>.py -v`
-- Lint: `python3 -m flake8 .`
-- Format: `python3 -m black . && python3 -m isort .`
-- Full check: `make check` (lint + typecheck + test; matches CI)
-- Run app: `python3 main.py` (interactive) or `python3 main.py --mode markitdown --no-interactive`
-- Self-test: `python3 main.py --test`
-- Coverage: `python3 -m pytest tests/ --cov=. --cov-report=html --cov-report=term-missing`
-- Security audit: `pip-audit --desc`
+## Route by task
 
-## Structure
+The detailed original commands, compatibility notes, and Cursor configuration
+are split in `docs/agent-guidance/index.md`. Load only the reference for the
+affected boundary.
 
-- `main.py` -- CLI entry point and orchestration
-- `cli_files.py` -- input listing, validation, and interactive file selection
-- `config.py` -- configuration loading from .env and defaults
-- `schemas.py` -- Pydantic data models and validation
-- `mistral_converter/` -- Mistral AI OCR/QnA/Batch conversion package (`import mistral_converter`)
-- `local_converter.py` -- local MarkItDown-based conversion
-- `modes/` -- mode orchestration (`batch.py`, `qna.py`, `system.py`)
-- `utils.py` -- shared utilities
-- `scripts/` -- helper scripts (test runner, etc.)
-- `tests/` -- pytest test suite
-- `input/` -- drop files here for conversion (gitignored)
-- `output_md/`, `output_txt/`, `output_images/` -- conversion output (gitignored)
-- `cache/` -- runtime cache (gitignored)
+- **Source or tests:** inspect the affected module and its tests; use focused
+  pytest, lint, or type checks as warranted.
+- **Configuration, dependency, security, or CI behavior:** inspect the named
+  configuration and its consumers before editing. Update docs/contracts when
+  the requested behavior changes.
+- **GUI, Cursor config, hooks, or Cursor slash skills:** read the relevant
+  `.cursor/` file. Cursor-specific skills/policies are not generic Codex rules.
+- **PR or release:** use `make check` when repository policy or requested
+  delivery requires it; do not run the full battery for an isolated prose edit.
 
-## Rules
-
-- Make the smallest safe change.
-- Preserve public APIs unless the task says otherwise.
-- Reuse existing patterns/utilities before adding abstractions.
-- Add/update tests for behavior changes.
-- An explicit request authorizes the local edits and relevant validation needed to complete it. Ask before materially expanding the scope or causing an external or irreversible effect.
-- Ask first before changing schema, auth, CI, infra, or dependencies when the request does not explicitly cover that change.
-- Never commit secrets or edit generated/vendor files casually.
-- Use `python3 -m <tool>` instead of bare commands when not in a virtualenv.
-
-## Environment
-
-- Python: 3.10, 3.11, or 3.12
-- System deps: `poppler-utils` (needed by pdf2image)
-- Setup: `pip install -r requirements.txt && pip install -r requirements-dev.txt`
-- Config: if `.env` is absent, copy `.env.example` to it; preserve existing settings. `MISTRAL_API_KEY` is optional for local conversion and non-cloud modes.
-
-## Debugging
-
-- Stale lint: `python3 -m flake8 .` (config is in `.flake8`, 120 char line length, black-compatible ignores)
-- Failing tests: `python3 -m pytest tests/ -v --tb=long` — tests mock API calls so they pass without a key
-- Type checking: `python3 -m pyright` (CI runs this; `make typecheck` mirrors it). `pyrightconfig.json` uses `typeCheckingMode: basic` with several reports disabled and `tests/` excluded.
-
-## Gotchas
-
-- `MISTRAL_API_KEY` is optional. Without it, Smart mode falls back to local MarkItDown; PDF-to-images, System Status,
-  and Maintenance remain available. Mistral OCR/QnA/Batch features are disabled.
-- The `Makefile` and `scripts/test-safe.sh` reference a local `env/` virtualenv. In cloud or CI environments, run tools via `python3 -m <tool>`.
-- Pre-existing lint warnings exist in test files (unused imports, unused variables); these are in the upstream code.
-- flake8 config is in `.flake8` (120 char line length, black-compatible ignores). pytest config is in `pyproject.toml`.
-- Black is configured with `line-length = 120` and isort uses `profile = "black"` — both in `pyproject.toml`.
-
-## Cursor config
-
-- Slash skills live in `.cursor/skills/`: `/explain`, `/review`, `/pr-description`, `/test-plan`, `/refactor-plan`, `/migration-plan`.
-- Hooks (`.cursor/hooks.json`, Node scripts in `.cursor/hooks/`): a destructive-command shell guard, black+isort auto-format after agent edits, and a scoped pytest run when the agent stops.
-- Do not edit `.cursor/hooks*`, `.cursor/agents/`, `.cursor/skills/`, or `.cursor/rules/` unless the user explicitly asks for Cursor config changes.
-
-## Subagents
-
-Three custom subagents are defined in `.cursor/agents/`:
-
-- **verifier** (read-only) — reviews changes for correctness, coverage gaps, and rule violations. Use after edits to catch issues before committing.
-- **test-runner** — runs scoped pytest for changed files and reports results. Does not fix failures.
-- **researcher** (read-only) — explores the codebase for usage sites, patterns, and context before making changes in unfamiliar areas.
-
-**Critical rules subagents must follow** (they do NOT inherit User Rules):
-
-- Use `python3 -m <tool>` instead of bare commands (no virtualenv assumed).
-- Never hardcode secrets. `MISTRAL_API_KEY` is loaded via `python-dotenv` and `config.py`.
-- Tests mock API calls — they work without a Mistral key.
-- Lint: `python3 -m flake8 .` | Format: `python3 -m black . && python3 -m isort .`
-- Test: `python3 -m pytest tests/test_<name>.py -v` (scoped) or `python3 -m pytest tests/` (full)
-- Subagents must not commit, push, publish, or run destructive operations.
-
-## Cloud agents
-
-- The VM is defined by `.cursor/environment.json` (`install` sets up poppler, ghostscript, and Python deps; Cursor snapshots the VM after it succeeds).
-- `MISTRAL_API_KEY` comes from the Cursor dashboard Secrets tab as an environment variable. Never expect a committed `.env` in cloud runs — and tests don't need the key.
-- Project hooks run in cloud agents (command hooks only). User-level hooks do not exist there.
-
-## PRs
-
-- Before PR: `make check` (runs lint + typecheck + tests, mirroring CI)
-- Include summary, risk, and validation steps.
+Keep provider-specific subagent policy in `.cursor/agents/` or `.cursor/rules/`.
+An explicit target takes priority over editor selection in Cursor slash skills.
