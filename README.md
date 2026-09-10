@@ -308,8 +308,8 @@ For the full configuration guide: **[CONFIGURATION.md](CONFIGURATION.md)**
 
 ## Upstream Alignment
 
-- MarkItDown: `markitdown[all]==0.1.6` (https://github.com/microsoft/markitdown)
-- Mistral Python SDK: `mistralai==2.7.1` (https://github.com/mistralai/client-python)
+- MarkItDown: `markitdown[all]==0.1.7` (https://github.com/microsoft/markitdown)
+- Mistral Python SDK: `mistralai==2.9.4` (https://github.com/mistralai/client-python)
 - Mistral OCR docs: https://docs.mistral.ai/capabilities/document_ai/basic_ocr/
 - Mistral Batch API: https://docs.mistral.ai/capabilities/batch/
 

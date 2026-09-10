@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=83", "wheel"]
+requires = ["setuptools>=83,<85", "wheel~=0.48"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -24,9 +24,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "markitdown[all]==0.1.6",
-    "mistralai==2.7.1",
-    "python-dotenv==1.2.2",
+    "markitdown[all]==0.1.7",
+    "mistralai==2.9.4",
+    "python-dotenv==1.2.3",
     "pydantic>=2,<3",
     "Pillow>=10,<13",
     "pdfplumber==0.11.10",
@@ -43,13 +43,13 @@ dev = [
     "pytest-xdist>=3.8",
     "flake8>=7.3",
     "black>=26.3",
-    "isort>=8.0",
+    "isort>=8,<10",
     "pyright>=1.1",
     "pip-audit>=2.0.0",
     "bandit>=1.7.0",
     "pre-commit>=4.5",
     "build>=1.4",
-    "twine>=6.2",
+    "twine>=6.2,<8.0",
 ]
 
 [project.scripts]
