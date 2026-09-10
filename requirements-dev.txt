@@ -13,7 +13,7 @@ pytest-xdist~=3.8  # Parallel test execution
 # Linting and Code Quality
 flake8~=7.3
 black~=26.3
-isort~=8.0
+isort>=8,<10
 pyright~=1.1
 
 # Security Auditing
