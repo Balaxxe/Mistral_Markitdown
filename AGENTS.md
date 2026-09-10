@@ -20,8 +20,9 @@ The detailed original commands, compatibility notes, and Cursor configuration
 are split in `docs/agent-guidance/index.md`. Load only the reference for the
 affected boundary.
 
-- **Source or tests:** inspect the affected module and its tests; use focused
-  pytest, lint, or type checks as warranted.
+- **Source or tests:** read `docs/agent-guidance/rules.md`, then inspect the
+  affected module and its tests; use focused pytest, lint, or type checks as
+  warranted.
 - **Configuration, dependency, security, or CI behavior:** inspect the named
   configuration and its consumers before editing. Update docs/contracts when
   the requested behavior changes.
