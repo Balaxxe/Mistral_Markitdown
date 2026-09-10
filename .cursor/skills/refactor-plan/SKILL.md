@@ -23,10 +23,12 @@ Do not modify files. This command plans only.
 
 Use this order:
 
-1. A file, module, symbol, or refactor goal named in `$ARGUMENTS`
+1. A concrete file, module, or symbol identified in `$ARGUMENTS`
 2. Selected code, if present
 3. Current active file
 4. Relevant callers, dependencies, and tests only as needed to plan safely
+
+Refactor goals or constraints such as `reduce duplication` or `preserve the public API` apply to whichever target this order selects. When they are the only arguments, use the selected code or active file; they do not identify a target on their own.
 
 If the target cannot be inferred, say `No refactor target was available.` and stop.
 

@@ -23,10 +23,12 @@ Do not modify files or apply fixes. This command reviews only.
 
 Use this order:
 
-1. If `$ARGUMENTS` names a file, symbol, or review focus, use that.
+1. If `$ARGUMENTS` identifies an explicit file, symbol, or concrete code scope, use that.
 2. Otherwise, review a code selection if present.
 3. Otherwise, review the current active file.
 4. Read neighboring definitions, callers, and tests only as needed.
+
+Focus modifiers such as `security`, `performance`, `API design`, or `be strict` apply to whichever target this order selects. When they are the only arguments, use the selected code or active file; they do not identify a target on their own.
 
 If no selection, active file, or identifiable target is available, say `No selection or active file was available to review.` and stop.
 
