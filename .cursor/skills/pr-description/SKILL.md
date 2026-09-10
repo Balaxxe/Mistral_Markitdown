@@ -42,7 +42,7 @@ Do not create commits, push branches, open a PR, or modify files. This command o
 
 ## Output Format
 
-Return exactly these sections in Markdown:
+Return one copy-paste-ready Markdown PR body. Use the sections below when they add useful information; omit empty optional sections rather than inserting placeholders.
 
 ## Summary
 - 2 to 4 bullets focused on user-visible or reviewer-relevant outcomes.
@@ -54,19 +54,14 @@ Return exactly these sections in Markdown:
 - Bullets based only on observed evidence.
 - If testing cannot be verified, say `Not verified`.
 
-## Risks / Reviewer Focus
+## Risks / Reviewer Focus (when relevant)
 - Bullets for risky areas, edge cases, migrations, or follow-up attention.
-- If nothing notable is found, say `None noted`.
 
-## Rollout Notes
+## Rollout Notes (when relevant)
 - Deployment, config, backfill, flags, or cleanup notes.
-- If none are found, say `None noted`.
 
 ## Suggested PR Title
-- One line only.
-
-## Copy/Paste Version
-- Provide the final PR body inside a single fenced Markdown block.
+- Include one title after the PR body.
 
 ## Quality Bar
 

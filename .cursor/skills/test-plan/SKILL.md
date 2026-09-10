@@ -15,7 +15,7 @@ You MUST consider the user input before proceeding if it is not empty.
 
 ## Goal
 
-Produce a concrete, prioritized test plan for the selected code, current file, or user-specified target.
+Produce a concrete, prioritized test plan for the user-specified target, selected code, or current file.
 
 Do not modify files or write the final tests unless the user explicitly asks for implementation after the plan.
 
@@ -23,10 +23,12 @@ Do not modify files or write the final tests unless the user explicitly asks for
 
 Use this order:
 
-1. Selected code, if present
-2. Current active file
-3. A file, function, class, or behavior named in `$ARGUMENTS`
+1. A concrete file, function, class, or behavior identified in `$ARGUMENTS`
+2. Selected code, if present
+3. Current active file
 4. Inspect nearby tests, fixtures, helpers, and public callers only as needed
+
+Focus modifiers such as `only unit tests`, `API contract coverage`, or `be exhaustive` apply to whichever target this order selects. When they are the only arguments, use the selected code or active file; they do not identify a target on their own.
 
 If no target is available, say `No selection or active file was available for a test plan.` and stop.
 

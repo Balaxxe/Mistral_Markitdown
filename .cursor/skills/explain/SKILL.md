@@ -15,7 +15,7 @@ You MUST consider the user input before proceeding if it is not empty.
 
 ## Goal
 
-Explain the target code clearly for an engineer who is new to this part of the system.
+Explain the user-specified target, selected code, or current file clearly for an engineer who is new to this part of the system.
 
 Do not modify files. This command explains only.
 
@@ -23,10 +23,12 @@ Do not modify files. This command explains only.
 
 Use this order:
 
-1. Selected code, if present
-2. Current active file
-3. A file, symbol, or topic named in `$ARGUMENTS`
+1. A concrete file, symbol, or code topic identified in `$ARGUMENTS`
+2. Selected code, if present
+3. Current active file
 4. Read referenced symbols, imports, callers, and tests only as needed
+
+Emphasis or style modifiers such as `focus on caching` or `explain like onboarding notes` apply to whichever target this order selects. When they are the only arguments, use the selected code or active file; they do not identify a target on their own.
 
 If no target is available, say `No selection or active file was available to explain.` and stop.
 
