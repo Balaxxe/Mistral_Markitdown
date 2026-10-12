@@ -308,10 +308,14 @@ For the full configuration guide: **[CONFIGURATION.md](CONFIGURATION.md)**
 
 ## Upstream Alignment
 
-- MarkItDown: `markitdown[all]==0.1.7` (https://github.com/microsoft/markitdown)
-- Mistral Python SDK: `mistralai==2.9.4` (https://github.com/mistralai/client-python)
+- MarkItDown: `markitdown[all]==0.1.8` (https://github.com/microsoft/markitdown)
+- Mistral Python SDK: `mistralai==2.10.1` (https://github.com/mistralai/client-python)
 - Mistral OCR docs: https://docs.mistral.ai/capabilities/document_ai/basic_ocr/
 - Mistral Batch API: https://docs.mistral.ai/capabilities/batch/
+
+Selected runtime dependencies are pinned as a validated set in `pyproject.toml` and
+`requirements.txt`. See the [maintainer environment guide](docs/agent-guidance/environment.md)
+for dependency and CI runtime upgrade requirements.
 
 ## License
 
