@@ -26,10 +26,15 @@ jobs:
           # Runner/image setuptools can be older than PYSEC-2026-3447 fix (83.0.0).
           python -m pip install --upgrade "setuptools>=83.0.0"
           pip install -r requirements.txt
-          pip install pip-audit
+
+      - name: Install pip-audit in its own environment
+        # pip-audit's own dependencies (filelock through CacheControl) are not
+        # project dependencies, and their fixed releases need Python 3.11 or
+        # newer, so keep them out of the audited Python 3.10 environment.
+        run: pipx install pip-audit
 
       - name: Run pip-audit
-        run: pip-audit --desc
+        run: PIPAPI_PYTHON_LOCATION="$(command -v python)" pip-audit --desc
 
       - name: Install Bandit
         run: pip install bandit
