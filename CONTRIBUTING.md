@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Enhanced Document Converter! This
 
 ### Prerequisites
 
-- Python 3.10 or higher (CI-tested on Python 3.10–3.12)
+- Python 3.11 or higher (CI-tested on Python 3.11–3.12)
 - Git
 - Virtual environment tool (venv, virtualenv, or conda)
 

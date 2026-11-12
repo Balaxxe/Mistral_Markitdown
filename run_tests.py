@@ -29,7 +29,7 @@ REQ_DEV = ROOT / "requirements-dev.txt"
 def _py_ok(python: Path) -> bool:
     try:
         r = subprocess.run(
-            [str(python), "-c", "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"],
+            [str(python), "-c", "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"],
             capture_output=True,
         )
     except OSError:
@@ -42,7 +42,7 @@ def _pick_base_python() -> Path | None:
     names: list[str] = []
     if env_first:
         names.append(env_first)
-    names.extend(["python3.12", "python3.11", "python3.10", "python3", "python"])
+    names.extend(["python3.12", "python3.11", "python3", "python"])
 
     seen: set[str] = set()
     for name in names:
@@ -141,7 +141,7 @@ def main() -> int:
     if not VENV_PYTHON.is_file() or not _venv_has_pytest():
         base = _pick_base_python()
         if base is None:
-            print("ERROR: need Python >= 3.10 on PATH (or set MISTRAL_MARKITDOWN_PYTHON).", file=sys.stderr)
+            print("ERROR: need Python >= 3.11 on PATH (or set MISTRAL_MARKITDOWN_PYTHON).", file=sys.stderr)
             return 2
         _ensure_venv(base)
         if not _venv_has_pytest():
