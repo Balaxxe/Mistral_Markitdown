@@ -49,6 +49,11 @@ if [ ! -d "env" ]; then
 else
     echo ""
     echo "[2/5] Virtual environment already exists."
+    if ! env/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        echo "ERROR: the existing env folder uses Python older than 3.11 (or is broken)."
+        echo "Delete the env folder and run this script again to rebuild it with Python 3.11+."
+        exit 1
+    fi
 fi
 
 source env/bin/activate

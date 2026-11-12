@@ -138,6 +138,13 @@ def main() -> int:
     if not pytest_args:
         pytest_args = ["tests/"]
 
+    if VENV_PYTHON.is_file() and not _py_ok(VENV_PYTHON):
+        print(
+            f"ERROR: {VENV_DIR} uses Python older than 3.11 (or is broken); delete it and rerun to rebuild it.",
+            file=sys.stderr,
+        )
+        return 2
+
     if not VENV_PYTHON.is_file() or not _venv_has_pytest():
         base = _pick_base_python()
         if base is None:

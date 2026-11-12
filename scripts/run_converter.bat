@@ -52,6 +52,13 @@ if not exist "env" (
 ) else (
     echo.
     echo [2/5] Virtual environment already exists.
+    env\Scripts\python.exe -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo ERROR: The existing env folder uses Python older than 3.11 ^(or is broken^).
+        echo Delete the env folder and run this script again to rebuild it with Python 3.11+.
+        pause
+        exit /b 1
+    )
 )
 
 REM Upgrade pip, setuptools, and wheel

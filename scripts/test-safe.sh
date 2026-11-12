@@ -130,6 +130,11 @@ fi
 
 ensure_venv "$BASE_PY"
 
+if ! python_at_least_311 "$VENV_DIR/bin/python"; then
+  echo "ERROR: $VENV_DIR uses Python older than 3.11 (or is broken); delete it and rerun to rebuild it." >&2
+  exit 2
+fi
+
 if venv_missing_test_deps; then
   install_test_deps
 fi
