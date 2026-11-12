@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Python 3.11 is now the minimum supported version. Python 3.10 reached end of life in October 2026, and Pillow 13 and the patched filelock releases need 3.11. The test matrix covers Python 3.11 and 3.12; lint, security, and release jobs run on 3.11
+- Allow Pillow 13 (`Pillow>=13,<14`) for the Pillow 13.0.0 security fixes
+- Update MarkItDown to 0.1.9
+
 ## [3.1.0] - 2026-07-26
 
 ### Added

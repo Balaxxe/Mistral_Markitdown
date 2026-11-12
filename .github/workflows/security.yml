@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           # Intentional oldest-supported runtime; see docs/agent-guidance/environment.md.
-          python-version: '3.10'
+          python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
@@ -28,9 +28,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install pip-audit in its own environment
-        # pip-audit's own dependencies (filelock through CacheControl) are not
-        # project dependencies, and their fixed releases need Python 3.11 or
-        # newer, so keep them out of the audited Python 3.10 environment.
+        # pip-audit's own dependencies (such as filelock through CacheControl)
+        # are not project dependencies, so keep them out of the audited
+        # project environment.
         run: pipx install pip-audit
 
       - name: Run pip-audit

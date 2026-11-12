@@ -3,7 +3,7 @@
 # For development (pytest, linters): see requirements-dev.txt
 
 # Core: MarkItDown with all optional format dependencies
-markitdown[all]==0.1.8
+markitdown[all]==0.1.9
 
 # Core: Mistral AI SDK v2 for OCR, QnA, and Batch API
 mistralai==2.10.1
@@ -15,7 +15,7 @@ python-dotenv==1.2.4
 pydantic>=2,<3
 
 # Image processing
-Pillow>=10,<13
+Pillow>=13,<14
 
 # PDF table extraction beyond MarkItDown's built-in support
 pdfplumber==0.11.10

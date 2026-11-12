@@ -1,6 +1,6 @@
 # Environment
 
-- Python: 3.10, 3.11, or 3.12
+- Python: 3.11 or 3.12
 - System deps: `poppler-utils` (needed by pdf2image)
 - Setup: `pip install -r requirements.txt && pip install -r requirements-dev.txt`
 - Config: if `.env` is absent, copy `.env.example` to it; preserve existing settings. `MISTRAL_API_KEY` is optional for local conversion and non-cloud modes.
@@ -14,9 +14,10 @@ are intentional; a runtime dependency update does not authorize relaxing them.
 The previous validated baseline was established in
 [PR #50](https://github.com/Balaxxe/Mistral_Markitdown/pull/50).
 
-Lint, security, and release jobs intentionally use Python 3.10, the oldest
-supported runtime. The normal test matrix covers Python 3.10, 3.11, and 3.12 on
-Linux, macOS, and Windows. Keep these workflow runtimes in place until a
+Lint, security, and release jobs intentionally use Python 3.11, the oldest
+supported runtime. The normal test matrix covers Python 3.11 and 3.12 on
+Linux, macOS, and Windows. Python 3.10 support was dropped after it reached
+end of life in October 2026 (Pillow 13 and the fixed filelock releases need 3.11). Keep these workflow runtimes in place until a
 coordinated migration is validated. In particular, changing only the lint,
 security, and release jobs to Python 3.14 would leave that version out of the
 normal test matrix.

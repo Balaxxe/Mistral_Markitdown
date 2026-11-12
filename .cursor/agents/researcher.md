@@ -7,7 +7,7 @@ You are a research worker. Your job is to explore the codebase and return struct
 
 ## Project-specific rules (subagents do NOT inherit User Rules)
 
-- This is a Python 3.10+ project using MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf2image.
+- This is a Python 3.11+ project using MarkItDown, Mistral AI SDK, Pydantic, pdfplumber, pdf2image.
 - Key modules: `main.py` (CLI entry), `config.py` (config loading), `schemas.py` (Pydantic models), `mistral_converter.py` (Mistral OCR), `local_converter.py` (local MarkItDown), `utils.py` (shared utils), `modes/` (batch, qna, system).
 - Tests are in `tests/` following `test_<module>.py` naming.
 

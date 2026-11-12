@@ -17,7 +17,7 @@ REM Check if Python is installed
 python --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python is not installed or not in PATH
-    echo Please install Python 3.10+ from https://www.python.org/
+    echo Please install Python 3.11+ from https://www.python.org/
     echo.
     pause
     exit /b 1
@@ -26,11 +26,11 @@ if errorlevel 1 (
 echo [1/5] Checking Python version...
 python --version
 
-REM Verify Python >= 3.10
-python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+REM Verify Python >= 3.11
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Python 3.10+ is required
-    echo Please install Python 3.10+ from https://www.python.org/
+    echo ERROR: Python 3.11+ is required
+    echo Please install Python 3.11+ from https://www.python.org/
     pause
     exit /b 1
 )
@@ -52,6 +52,13 @@ if not exist "env" (
 ) else (
     echo.
     echo [2/5] Virtual environment already exists.
+    env\Scripts\python.exe -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo ERROR: The existing env folder uses Python older than 3.11 ^(or is broken^).
+        echo Delete the env folder and run this script again to rebuild it with Python 3.11+.
+        pause
+        exit /b 1
+    )
 )
 
 REM Upgrade pip, setuptools, and wheel

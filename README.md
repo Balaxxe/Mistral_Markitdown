@@ -4,7 +4,7 @@
 ![Linting](https://github.com/Balaxxe/Mistral_Markitdown/actions/workflows/lint.yml/badge.svg)
 ![Security](https://github.com/Balaxxe/Mistral_Markitdown/actions/workflows/security.yml/badge.svg)
 ![Coverage](https://img.shields.io/badge/coverage-75%25%2B%20gated-brightgreen)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A document conversion system combining Microsoft **MarkItDown** (local) with **Mistral AI OCR** (cloud) for optimal document processing. Features smart auto-routing, advanced PDF table extraction, intelligent caching, and concurrent batch processing.
@@ -13,7 +13,7 @@ A document conversion system combining Microsoft **MarkItDown** (local) with **M
 
 ### Prerequisites
 
-- Python 3.10+ (CI-tested on Python 3.10-3.12)
+- Python 3.11+ (CI-tested on Python 3.11-3.12)
 - Mistral API key (optional — only needed for cloud OCR/QnA/Batch features): https://console.mistral.ai/api-keys/
   - Without a key, smart mode falls back to local conversion; MarkItDown, PDF-to-images, status, and maintenance
     remain available.

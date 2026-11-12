@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/test-safe.sh [pytest-args...]
 
-Run pytest with a known-good Python (>=3.10) and required test deps installed,
+Run pytest with a known-good Python (>=3.11) and required test deps installed,
 so local Python/version/plugin mismatches don't produce noisy failures.
 
 Examples:
@@ -25,11 +25,11 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-python_at_least_310() {
+python_at_least_311() {
   local bin="$1"
   "$bin" - <<'PY' >/dev/null 2>&1
 import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
 PY
 }
 
@@ -40,7 +40,7 @@ pick_base_python() {
   fi
 
   local name
-  for name in python3.12 python3.11 python3.10 python3; do
+  for name in python3.12 python3.11 python3; do
     if command -v "$name" >/dev/null 2>&1; then
       candidates+=("$(command -v "$name")")
     fi
@@ -54,7 +54,7 @@ pick_base_python() {
 
   local bin
   for bin in "${candidates[@]}"; do
-    if [[ -x "$bin" ]] && python_at_least_310 "$bin"; then
+    if [[ -x "$bin" ]] && python_at_least_311 "$bin"; then
       printf '%s\n' "$bin"
       return 0
     fi
@@ -124,11 +124,16 @@ install_test_deps() {
 }
 
 if ! BASE_PY="$(pick_base_python)"; then
-  echo "ERROR: no compatible Python found (need >=3.10)" >&2
+  echo "ERROR: no compatible Python found (need >=3.11)" >&2
   exit 2
 fi
 
 ensure_venv "$BASE_PY"
+
+if ! python_at_least_311 "$VENV_DIR/bin/python"; then
+  echo "ERROR: $VENV_DIR uses Python older than 3.11 (or is broken); delete it and rerun to rebuild it." >&2
+  exit 2
+fi
 
 if venv_missing_test_deps; then
   install_test_deps
